@@ -1,0 +1,20 @@
+{
+  "name": "agent-room",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "check": "tsx src/walkthrough.ts"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.36",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
