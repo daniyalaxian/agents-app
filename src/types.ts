@@ -134,6 +134,10 @@ export type Room = {
   lastHealthReport: unknown | null
   /** Active swarm team id (default SDLC Sprint Team when null). */
   teamId: string | null
+  /** Environment (client or program) this room belongs to. Null = the Default environment. */
+  environmentId: string | null
+  /** Stable file key for this room. Unlike `id`, it never changes when the requirement does. */
+  slot: string | null
   messages: ChatMessage[]
   stages: StageState[]
   notes: string[]

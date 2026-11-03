@@ -86,6 +86,7 @@ import {
   openRoom,
   recover,
   retry,
+  roomIdFor,
   runUntilWait,
   setMemoryRoot,
   softResetRoom,
@@ -93,8 +94,16 @@ import {
 } from "./router.js"
 import { engineName, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
 import { ensureSession } from "./session.js"
-import { readRoom, writeRoom } from "./store.js"
-import { slugifyRequirement, parseWritePlans } from "./permissions.js"
+import { DEFAULT_ENV_ID, listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
+import {
+  canUseEnvironment,
+  createEnvironment,
+  ensureDefaultEnvironment,
+  getEnvironment,
+  listEnvironments,
+  setEnvironmentRepos,
+} from "./environments.js"
+import { parseWritePlans } from "./permissions.js"
 import {
   addMemory,
   formatMemoryForPacket,
@@ -559,6 +568,105 @@ app.post("/api/github/disconnect", (req, res) => {
   res.json({ ok: true })
 })
 
+/** Environments the person can use, the active one, and its sprint rooms. */
+function environmentsView(workspaceId: string | null) {
+  const environments = listEnvironments(root, workspaceId)
+  const active = current()
+  const activeEnvId = active.environmentId ?? DEFAULT_ENV_ID
+  const visible = new Set(environments.map((env) => env.id))
+  const rooms = listRoomSummaries(root).filter((item) => visible.has(item.environmentId))
+  return {
+    environments: environments.map((env) => ({
+      id: env.id,
+      name: env.name,
+      description: env.description,
+      repoCount: env.gitRepos.length,
+      roomCount: rooms.filter((item) => item.environmentId === env.id).length,
+    })),
+    activeEnvironmentId: activeEnvId,
+    activeSlot: active.slot,
+    rooms,
+  }
+}
+
+app.get("/api/environments", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  res.json(environmentsView(userForSession(root, sessionId)?.workspaceId ?? null))
+})
+
+app.post("/api/environments", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const user = requireUser(root, sessionId)
+    if (busy || liveGroup) {
+      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
+      return
+    }
+    const env = createEnvironment(root, user.workspaceId, {
+      name: typeof req.body?.name === "string" ? req.body.name : "",
+      description: typeof req.body?.description === "string" ? req.body.description : "",
+    })
+    openNewRoom(env.id, user.workspaceId, undefined)
+    res.json(environmentsView(user.workspaceId))
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not create the environment" })
+  }
+})
+
+/** Use this room's repos as the environment default for new sprint rooms. */
+app.post("/api/environments/:id/repos-from-room", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+    const env = getEnvironment(root, String(req.params.id))
+    if (!env || !canUseEnvironment(env, workspaceId)) throw new Error("Environment not found")
+    const room = current()
+    if ((room.environmentId ?? DEFAULT_ENV_ID) !== env.id) throw new Error("Open a room in this environment first")
+    setEnvironmentRepos(root, env.id, room.gitRepos)
+    res.json(environmentsView(workspaceId))
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not save the repos" })
+  }
+})
+
+app.post("/api/environments/:id/rooms", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+    const env = getEnvironment(root, String(req.params.id))
+    if (!env || !canUseEnvironment(env, workspaceId)) throw new Error("Environment not found")
+    if (busy || liveGroup) {
+      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
+      return
+    }
+    const requirement =
+      typeof req.body?.requirement === "string" && req.body.requirement.trim() ? req.body.requirement.trim() : undefined
+    openNewRoom(env.id, workspaceId, requirement)
+    res.json(environmentsView(workspaceId))
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not create the room" })
+  }
+})
+
+app.post("/api/rooms/:slot/open", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+    if (busy || liveGroup) {
+      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
+      return
+    }
+    const room = readRoom(root, String(req.params.slot))
+    if (!room) throw new Error("Room not found")
+    const env = getEnvironment(root, room.environmentId ?? DEFAULT_ENV_ID)
+    if (!env || !canUseEnvironment(env, workspaceId)) throw new Error("Room not found")
+    setActiveSlot(root, String(req.params.slot))
+    res.json(present(current()))
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not open the room" })
+  }
+})
+
 app.get("/api/room", (req, res) => {
   ensureSession(req, res, secrets.sessionSecret)
   res.json(present(current()))
@@ -576,9 +684,12 @@ app.post("/api/room/reset", (req, res) => {
     typeof req.body?.requirement === "string" && req.body.requirement.trim()
       ? req.body.requirement.trim()
       : undefined
-  const prior = hard ? null : current()
+  const active = current()
+  const prior = hard ? null : active
   const swarm = roomAgents(prior, workspaceId)
-  const room = hard ? openRoom(swarm, requirement) : softResetRoom(prior!, swarm, requirement)
+  const room = hard ? openRoom(swarm, requirement, active.environmentId) : softResetRoom(prior!, swarm, requirement)
+  // A reset rewrites the same room file, so the slot and environment carry over.
+  room.slot = active.slot
   if (!room.teamId) room.teamId = ensureDefaultTeam(root).id
   writeRoom(root, room)
   res.json(present(room))
@@ -597,7 +708,7 @@ app.post("/api/room/requirement", (req, res) => {
     return
   }
   room.requirement = requirement
-  room.id = slugifyRequirement(requirement)
+  room.id = roomIdFor(room.environmentId, requirement)
   room.messages = [
     {
       id: crypto.randomUUID(),
@@ -1593,7 +1704,20 @@ async function loadSourcesForRole(
   return sources
 }
 
+/** A fresh sprint room inside an environment, made active. It starts with the environment's default repos. */
+function openNewRoom(environmentId: string, workspaceId: string | null, requirement: string | undefined): Room {
+  const env = getEnvironment(root, environmentId)
+  const room = openRoom(roomAgents(null, workspaceId), requirement, environmentId)
+  room.teamId = ensureDefaultTeam(root).id
+  room.gitRepos = (env?.gitRepos ?? []).map((repo) => ({ ...repo, id: crypto.randomUUID() }))
+  room.slot = newSlot()
+  writeRoom(root, room)
+  setActiveSlot(root, room.slot)
+  return room
+}
+
 function current(): Room {
+  ensureDefaultEnvironment(root)
   const existing = readRoom(root)
   if (!existing) {
     const defaultTeam = ensureDefaultTeam(root)

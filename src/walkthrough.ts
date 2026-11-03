@@ -4,7 +4,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadAgents } from "./agents.js"
 import { decryptJson, encryptJson, loadSecrets, sealed, unseal } from "./crypto.js"
-import { approveAndContinue, openRoom, runUntilWait, setMemoryRoot } from "./router.js"
+import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, softResetRoom } from "./router.js"
+import { canUseEnvironment, createEnvironment, listEnvironments } from "./environments.js"
+import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { resolveTeamAgents } from "./catalog.js"
@@ -339,4 +341,55 @@ if (fs.existsSync(path.join(realKit, ".ai", "agents"))) {
 }
 fs.rmSync(tmp, { recursive: true, force: true })
 
-console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off, Axian import scoped")
+// Environments: rooms live in their own files, apart per client; a run keeps writing to its own room.
+const envData = fs.mkdtempSync(path.join(os.tmpdir(), "envs-"))
+const savedDataDir = process.env.DATA_DIR
+process.env.DATA_DIR = envData
+const legacy = openRoom(agents, "Legacy sprint")
+fs.writeFileSync(path.join(envData, "room.json"), JSON.stringify(legacy))
+const migrated = readRoom(root)
+assert(migrated?.id === "legacy-sprint" && migrated.slot, "the old single room should migrate into rooms/ and stay active")
+assert(fs.existsSync(path.join(envData, "room.json")), "the old room.json stays as a backup")
+assert(listRoomSummaries(root).length === 1, "migration should not duplicate the room")
+
+const envA = createEnvironment(root, "ws-a", { name: "SME TZ" })
+const envB = createEnvironment(root, "ws-b", { name: "SME TZ" }) // same name, different workspace is fine
+let dup = ""
+try {
+  createEnvironment(root, "ws-a", { name: "sme tz" })
+} catch (error) {
+  dup = error instanceof Error ? error.message : ""
+}
+assert(dup.includes("already"), "a workspace cannot have two environments with the same name")
+assert(listEnvironments(root, "ws-a").map((env) => env.name).join() === "Default,SME TZ", "a workspace sees Default and its own environments")
+assert(!listEnvironments(root, "ws-a").some((env) => env.id === envB.id), "another workspace's environment must be invisible")
+assert(!canUseEnvironment(envB, "ws-a") && canUseEnvironment(envB, "ws-b"), "environment access follows the workspace")
+
+const roomA = openRoom(agents, "Same requirement", envA.id)
+const roomB = openRoom(agents, "Same requirement", envB.id)
+assert(roomA.id !== roomB.id && roomA.id.startsWith(`${envA.id}--`), "the same requirement in two environments needs different room ids")
+assert(roomIdFor(null, "Same requirement") === "same-requirement", "the Default environment keeps plain ids, so old memory still matches")
+roomA.slot = newSlot()
+roomB.slot = newSlot()
+writeRoom(root, roomA)
+writeRoom(root, roomB)
+const summaries = listRoomSummaries(root)
+assert(summaries.length === 3, `expected 3 rooms, got ${summaries.length}`)
+assert(summaries.filter((item) => item.environmentId === envA.id).length === 1, "each environment lists only its own rooms")
+assert(summaries.find((item) => item.slot === migrated.slot)?.environmentId === "env-default", "legacy rooms belong to Default")
+
+// The person opens another room while a run still holds roomA: its writes must land in roomA's file.
+setActiveSlot(root, roomB.slot!)
+roomA.notes.push("written by a run that started before the switch")
+writeRoom(root, roomA)
+assert(readRoom(root)?.id === roomB.id, "the active room is still the one the person opened")
+assert(readRoom(root, roomA.slot)?.notes.includes("written by a run that started before the switch"), "a run keeps writing to its own room")
+assert(!readRoom(root)?.notes.length, "the other room must not receive that write")
+const reset = softResetRoom(roomA, agents, "New wording")
+assert(reset.slot === roomA.slot && reset.environmentId === envA.id && reset.id.startsWith(`${envA.id}--`), "a soft reset keeps the room's slot and environment")
+
+if (savedDataDir === undefined) delete process.env.DATA_DIR
+else process.env.DATA_DIR = savedDataDir
+fs.rmSync(envData, { recursive: true, force: true })
+
+console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off, Axian import scoped, environments isolated")

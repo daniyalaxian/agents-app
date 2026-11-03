@@ -14,10 +14,18 @@ export function setMemoryRoot(root: string): void {
 export const REQUIREMENT =
   "Show payment status on the order screen. The customer opens an order and sees whether payment is Paid, Pending, or Failed."
 
-export function openRoom(agents: AgentFile[], requirement = REQUIREMENT): Room {
+/** Room ids key memory and chats. Rooms outside the Default environment are prefixed so two clients never share them. */
+export function roomIdFor(environmentId: string | null, requirement: string): string {
+  const slug = slugifyRequirement(requirement)
+  return environmentId && environmentId !== "env-default" ? `${environmentId}--${slug}` : slug
+}
+
+export function openRoom(agents: AgentFile[], requirement = REQUIREMENT, environmentId: string | null = null): Room {
   const trimmed = requirement.trim() || REQUIREMENT
   return {
-    id: slugifyRequirement(trimmed),
+    id: roomIdFor(environmentId, trimmed),
+    environmentId,
+    slot: null,
     requirement: trimmed,
     confluencePageUrl: null,
     pastedBrd: null,
@@ -50,7 +58,9 @@ export function openRoom(agents: AgentFile[], requirement = REQUIREMENT): Room {
 export function softResetRoom(room: Room, agents: AgentFile[], requirement?: string): Room {
   const nextReq = (requirement ?? room.requirement).trim() || REQUIREMENT
   return {
-    id: slugifyRequirement(nextReq),
+    id: roomIdFor(room.environmentId ?? null, nextReq),
+    environmentId: room.environmentId ?? null,
+    slot: room.slot ?? null,
     requirement: nextReq,
     confluencePageUrl: room.confluencePageUrl ?? null,
     pastedBrd: room.pastedBrd ?? null,
@@ -105,6 +115,8 @@ export function recover(room: Room): Room {
     lastSmokeReport: room.lastSmokeReport ?? null,
     lastHealthReport: room.lastHealthReport ?? null,
     teamId: room.teamId ?? null,
+    environmentId: room.environmentId ?? null,
+    slot: room.slot ?? null,
   }
   if (!withUrl.stages.some((stage) => stage.status === "running")) return withUrl
   return {
@@ -269,6 +281,8 @@ function clone(room: Room): Room {
     lastSmokeReport: room.lastSmokeReport ?? null,
     lastHealthReport: room.lastHealthReport ?? null,
     teamId: room.teamId ?? null,
+    environmentId: room.environmentId ?? null,
+    slot: room.slot ?? null,
     notes: [...room.notes],
     messages: [...room.messages],
     stages: room.stages.map((stage) => ({ ...stage })),
