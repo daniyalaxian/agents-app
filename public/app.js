@@ -1066,6 +1066,34 @@ async function loadTeams() {
     .join("")
 }
 
+$("#toolkit-import").addEventListener("submit", async (event) => {
+  event.preventDefault()
+  const preview = $("#toolkit-preview")
+  preview.classList.remove("error")
+  if (!session?.user) {
+    preview.classList.add("error")
+    preview.textContent = "Sign in to import agents."
+    return
+  }
+  preview.textContent = "Importing…"
+  const payload = await fetchJson("/api/toolkits/axian/import", {
+    path: $("#toolkit-path").value.trim(),
+    overwrite: $("#toolkit-overwrite").checked,
+  })
+  if (payload.error) {
+    preview.classList.add("error")
+    preview.textContent = payload.error
+    return
+  }
+  const count = (status) => payload.agents.filter((agent) => agent.status === status).length
+  preview.textContent =
+    `Imported ${count("imported")}, updated ${count("updated")}, skipped ${count("skipped")}. ` +
+    (payload.team ? `Team "${payload.team.name}" is ready to use.` : "") +
+    (payload.warnings.length ? ` Notes: ${payload.warnings.join("; ")}` : "")
+  await loadCatalog()
+  await loadTeams()
+})
+
 catalogList.addEventListener("click", async (event) => {
   const dup = event.target.closest("[data-duplicate]")
   const edit = event.target.closest("[data-edit-catalog]")
@@ -1128,7 +1156,7 @@ async function loadCatalog() {
         ${avatar(agent.title, agent.name)}
         <div>
           <strong>${escape(agent.title)}</strong>
-          <div class="lead">${agent.origin === "custom" ? "Your copy" : "Built in"}${agent.needsApproval ? " · pauses for your OK" : ""}</div>
+          <div class="lead">${agent.toolkit ? `Imported · ${escape(agent.toolkit)}` : agent.origin === "custom" ? "Your copy" : "Built in"}${agent.needsApproval ? " · pauses for your OK" : ""}</div>
           <div class="ask-actions">${actions || `<span class="lead">Sign in to copy and edit</span>`}</div>
         </div>
       </li>`

@@ -42,7 +42,16 @@ export function parseAgent(filePath: string, fileName: string): AgentFile {
     file: fileName,
     instructions,
     draft,
+    ...listField(fields.sources, "sources", ","),
+    ...listField(fields.kit_dirs, "kitDirs", "|"),
+    ...(fields.toolkit ? { toolkit: fields.toolkit } : {}),
   }
+}
+
+function listField<K extends string>(value: string | undefined, key: K, sep: string): Partial<Record<K, string[]>> {
+  if (value === undefined) return {}
+  const items = value.split(sep).map((part) => part.trim()).filter(Boolean)
+  return { [key]: items } as Partial<Record<K, string[]>>
 }
 
 function parseFields(block: string): Record<string, string> {

@@ -5,6 +5,12 @@ export type AgentFile = {
   file: string
   instructions: string
   draft: string
+  /** Which sources this agent receives: brd, figma, repos, deploy. Unset = decided by role name (built-in roles). */
+  sources?: string[]
+  /** Folders the agent may read (e.g. an imported toolkit's skills). Never pasted into the prompt. */
+  kitDirs?: string[]
+  /** Toolkit id this agent was imported from, e.g. axian-squad. */
+  toolkit?: string
 }
 
 export type StageStatus = "pending" | "running" | "waiting_approval" | "done" | "error"
@@ -18,7 +24,7 @@ export type StageState = {
 }
 
 export type SourceDoc = {
-  kind: "confluence" | "paste" | "figma" | "github"
+  kind: "confluence" | "paste" | "figma" | "github" | "toolkit"
   title: string
   url: string
   body: string

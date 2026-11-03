@@ -152,6 +152,13 @@
               <button type="submit">Save team</button>
               <p id="teams-preview" class="source-preview"></p>
             </form>
+            <form id="toolkit-import" class="source-form card">
+              <h3>Import Axian Squad</h3>
+              <label class="field"><span>Kit folder on this computer</span><input id="toolkit-path" placeholder="D:\axian agents\squad-agent-kit" /></label>
+              <label class="field check"><input id="toolkit-overwrite" type="checkbox" /><span>Replace agents I already imported</span></label>
+              <button type="submit">Import</button>
+              <p id="toolkit-preview" class="source-preview"></p>
+            </form>
             <h3 class="section-title">Agents</h3>
             <ul id="catalog-list" class="memory-list"></ul>
             <form id="catalog-edit" class="source-form card" hidden>

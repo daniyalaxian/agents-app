@@ -82,7 +82,7 @@ export function softResetRoom(room: Room, agents: AgentFile[], requirement?: str
 export type RunHooks = {
   onRoom?: (room: Room) => void
   onDelta?: (roleName: string, text: string) => void
-  loadSources?: (room: Room, roleName: string) => Promise<SourceDoc[]>
+  loadSources?: (room: Room, roleName: string, agent?: AgentFile) => Promise<SourceDoc[]>
   /** Runtime write tools for one role run. `room` is the live room the run mutates. */
   toolsFor?: (room: Room, agent: AgentFile) => RuntimeTools | undefined
 }
@@ -143,7 +143,7 @@ export async function runUntilWait(
     if (!agent) throw new Error(`Missing role file for ${stage.name}`)
 
     const prior = finishedOutputs(next.stages)
-    const sources = (await hooks.loadSources?.(next, agent.name)) ?? []
+    const sources = (await hooks.loadSources?.(next, agent.name, agent)) ?? []
     const memoryText = memoryRoot
       ? formatMemoryForPacket(memoryEntriesForRoom(memoryRoot, next))
       : "None yet."

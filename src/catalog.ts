@@ -47,6 +47,8 @@ export function customAgents(root: string, workspaceId: string): CatalogAgent[] 
     })
 }
 
+export { serializeAgent }
+
 export function listCatalog(root: string, workspaceId: string | null): CatalogAgent[] {
   const prebuilt = prebuiltAgents(root)
   if (!workspaceId) return prebuilt
@@ -89,6 +91,9 @@ export function duplicateAgent(
     clonedFrom: source.name,
     instructions: source.instructions,
     draft: source.draft,
+    sources: source.sources,
+    kitDirs: source.kitDirs,
+    toolkit: source.toolkit,
   })
 
   const dir = customDir(root, workspaceId)
@@ -128,6 +133,9 @@ export function updateCustomAgent(
     clonedFrom: current.clonedFrom,
     instructions: patch.instructions ?? current.instructions,
     draft: patch.draft ?? current.draft,
+    sources: current.sources,
+    kitDirs: current.kitDirs,
+    toolkit: current.toolkit,
   })
   fs.writeFileSync(path.join(customDir(root, workspaceId), `${name}.md`), markdown)
   return findCatalogAgent(root, workspaceId, name)!
@@ -159,6 +167,9 @@ export function resolveTeamAgents(
       file: agent.file,
       instructions: agent.instructions,
       draft: agent.draft,
+      sources: agent.sources,
+      kitDirs: agent.kitDirs,
+      toolkit: agent.toolkit,
     })
   }
   if (!resolved.length) throw new Error("Team has no agents")
@@ -199,7 +210,17 @@ function serializeAgent(input: {
   clonedFrom: string | null
   instructions: string
   draft: string
+  sources?: string[]
+  kitDirs?: string[]
+  toolkit?: string
 }): string {
+  const extra =
+    (input.toolkit ? `
+toolkit: ${input.toolkit}` : "") +
+    (input.sources ? `
+sources: ${input.sources.join(", ")}` : "") +
+    (input.kitDirs?.length ? `
+kit_dirs: ${input.kitDirs.join(" | ")}` : "")
   const toolsLine = input.tools.length ? `\ntools: ${input.tools.join(", ")}` : "\ntools:"
   const cloned = input.clonedFrom ? `\ncloned_from: ${input.clonedFrom}` : ""
   const draftBody = input.draft.startsWith("## Draft")
@@ -208,7 +229,7 @@ function serializeAgent(input: {
   return `---
 name: ${input.name}
 title: ${input.title}
-needs_approval: ${input.needsApproval ? "true" : "false"}${toolsLine}${cloned}
+needs_approval: ${input.needsApproval ? "true" : "false"}${toolsLine}${cloned}${extra}
 ---
 
 ${input.instructions.trim()}

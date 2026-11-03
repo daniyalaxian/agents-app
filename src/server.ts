@@ -122,6 +122,8 @@ import {
 import type { ReadToolName, RuntimeTools, ToolRequest } from "./tools.js"
 import type { SDKCustomToolResult } from "@cursor/sdk"
 import type { AgentFile, PermissionRequest, Room, SourceDoc } from "./types.js"
+import { sourceScope } from "./scope.js"
+import { importAxian } from "./toolkit.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 loadEnv(root)
@@ -234,6 +236,7 @@ app.get("/api/catalog", (req, res) => {
     origin: agent.origin,
     tools: agent.tools,
     clonedFrom: agent.clonedFrom,
+    toolkit: agent.toolkit ?? null,
     file: agent.file,
   }))
   res.json({ agents: catalog })
@@ -326,6 +329,22 @@ app.delete("/api/catalog/:name", (req, res) => {
     res.json({ ok: true })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Delete failed" })
+  }
+})
+
+app.post("/api/toolkits/axian/import", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const user = requireUser(root, sessionId)
+    const kitPath =
+      (typeof req.body?.path === "string" && req.body.path.trim()) || process.env.AXIAN_KIT_PATH?.trim() || ""
+    if (!kitPath) {
+      res.status(400).json({ error: "Give the Axian kit folder, or set AXIAN_KIT_PATH" })
+      return
+    }
+    res.json(importAxian(root, user.workspaceId, kitPath, { overwrite: req.body?.overwrite === true }))
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Import failed" })
   }
 })
 
@@ -802,7 +821,7 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
     at: new Date().toISOString(),
   })
   try {
-    const sources = await loadSourcesForRole(sessionId, room, agent.name)
+    const sources = await loadSourcesForRole(sessionId, room, agent.name, false, agent)
     const dmHistory = thread.messages
       .slice(-20)
       .map((msg) => `${msg.title}: ${msg.body}`)
@@ -1325,7 +1344,7 @@ async function streamRun(
         roomAgents(current(), null).find((agent) => agent.name === roleName)?.title ?? roleName
       emit({ type: "delta", name: roleName, title, text })
     },
-    loadSources: (room, roleName) => loadSourcesForRole(sessionId, room, roleName),
+    loadSources: (room, roleName, agent) => loadSourcesForRole(sessionId, room, roleName, false, agent),
     toolsFor: (room, agent) =>
       runtimeTools({
         sessionId,
@@ -1402,7 +1421,7 @@ async function streamGroup(
       maxTurns: Number(process.env.GROUP_MAX_TURNS) || 12,
       withTools: supportsRuntimeTools(),
       // Members share the same sources, so load them once per run.
-      sourcesFor: (agent) => (sharedSources ??= loadSourcesForRole(sessionId, room, agent.name, true)),
+      sourcesFor: (agent) => (sharedSources ??= loadSourcesForRole(sessionId, room, agent.name, true, agent)),
       contextFor: async (agent, sources) =>
         groupContext({
           agent,
@@ -1452,16 +1471,23 @@ async function loadSourcesForRole(
   room: Room,
   roleName: string,
   shared = false,
+  agent?: AgentFile,
 ): Promise<SourceDoc[]> {
   const sources: SourceDoc[] = []
-  const needsBrd = shared || roleName === "sa" || roleName === "software-lead"
-  const needsFigma = shared || roleName === "sa" || roleName === "software-lead"
-  const needsGit =
-    shared ||
-    roleName === "sa" ||
-    roleName === "software-lead" ||
-    roleName === "architecture" ||
-    roleName === "coding"
+  const scope = sourceScope(roleName, shared, agent)
+  const needsBrd = scope.brd
+  const needsFigma = scope.figma
+  const needsGit = scope.repos
+
+  for (const dir of agent?.kitDirs ?? []) {
+    sources.push({
+      kind: "toolkit",
+      title: `Toolkit folder (${agent?.toolkit ?? "imported"})`,
+      url: `toolkit://${agent?.toolkit ?? "imported"}`,
+      body: `Readable folder: ${dir}. Read the files your instructions name. Nothing from it is pasted here.`,
+      localPath: dir,
+    })
+  }
 
   if (needsBrd && room.pastedBrd?.trim()) {
     sources.push({
@@ -1536,11 +1562,7 @@ async function loadSourcesForRole(
     })
   }
 
-  const needsDeployCtx =
-    roleName === "deploy" ||
-    roleName === "qa-unit" ||
-    roleName === "qa-e2e" ||
-    roleName === "devops"
+  const needsDeployCtx = scope.deploy
   if (needsDeployCtx) {
     const envLines = Object.entries(room.deploymentsByEnv || {}).map(
       ([envName, rec]) =>

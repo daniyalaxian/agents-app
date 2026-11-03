@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadAgents } from "./agents.js"
@@ -6,6 +7,9 @@ import { decryptJson, encryptJson, loadSecrets, sealed, unseal } from "./crypto.
 import { approveAndContinue, openRoom, runUntilWait, setMemoryRoot } from "./router.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, parseTurnTag, resolveAlias, runGroup } from "./group.js"
+import { resolveTeamAgents } from "./catalog.js"
+import { sourceScope } from "./scope.js"
+import { importAxian } from "./toolkit.js"
 import { PermissionGate } from "./gate.js"
 import { findSprint } from "./jira.js"
 import { cursorCustomTools, type ToolRequest } from "./tools.js"
@@ -261,4 +265,78 @@ const buildRoom = await runUntilWait(handed, agents, project, async (packet, onD
 assert(afterKickoff[0] === "architecture", `build should start at Architecture, got ${afterKickoff[0]}`)
 assert(buildRoom.stages.find((stage) => stage.name === "architecture")?.status === "waiting_approval", "Architecture should wait for approval")
 
-console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off")
+// Toolkit import: Axian agents become catalog agents, scoped by what they declare, with the kit unchanged.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentic-"))
+fs.cpSync(path.join(root, "agents"), path.join(tmp, "agents"), { recursive: true })
+const kit = path.join(tmp, "kit")
+const kitAgents = path.join(kit, ".ai", "agents")
+const fixture: [string, string, number][] = [
+  ["SystemAnalyst", "RequirementAgent", 1],
+  ["QA", "TestDesignAgent", 3],
+  ["SystemAnalyst", "StoryAgent", 4],
+  ["Developer", "DeployAgent", 6],
+]
+for (const [folder, name, rank] of fixture) {
+  fs.mkdirSync(path.join(kitAgents, folder), { recursive: true })
+  fs.writeFileSync(
+    path.join(kitAgents, folder, `${name}.md`),
+    `# ${name} (${folder} · rank ${rank})\n\n## Scope\n1. Header — key and sources\n2. Gap analysis — plain gaps\n\n## Stop points\n- none\n`,
+  )
+}
+fs.writeFileSync(
+  path.join(kitAgents, "README.md"),
+  fixture
+    .map(([folder, name, rank]) => `| \`${folder}/\` | [\`${name}\`](${folder}/${name}.md) | **${rank}** | Gate | \`0${rank}-x.md\` |`)
+    .join("\n"),
+)
+const kitBefore = fs.readFileSync(path.join(kitAgents, "SystemAnalyst", "RequirementAgent.md"), "utf8")
+const report = importAxian(tmp, "ws-1", kit)
+assert(report.agents.length === 4 && report.agents.every((a) => a.status === "imported"), "all fixture agents should import")
+assert(report.team?.agentNames.join() === "requirement-agent,test-design-agent,story-agent,deploy-agent", "team should follow rank order")
+assert(fs.readFileSync(path.join(kitAgents, "SystemAnalyst", "RequirementAgent.md"), "utf8") === kitBefore, "the kit must not be modified")
+assert(importAxian(tmp, "ws-1", kit).agents.every((a) => a.status === "skipped"), "re-import should skip existing agents")
+assert(importAxian(tmp, "ws-1", kit, { overwrite: true }).agents.every((a) => a.status === "updated"), "overwrite should update")
+
+const team = resolveTeamAgents(
+  tmp,
+  "ws-1",
+  report.team!.agentNames,
+  Object.fromEntries(report.agents.map((a) => [a.name, a.needsApproval])),
+)
+const byName = new Map(team.map((a) => [a.name, a]))
+const req = byName.get("requirement-agent")!
+assert(req.needsApproval && byName.get("story-agent")!.needsApproval, "gated Axian agents should wait for approval")
+assert(!byName.get("test-design-agent")!.needsApproval, "TestDesignAgent should not stop the flow")
+assert(req.draft.includes("Gap analysis") && req.draft.includes("{{requirement}}"), "imported agents need an offline draft")
+assert(req.instructions.includes("Platform notes") && req.instructions.includes("# RequirementAgent"), "preamble plus the original text")
+assert(req.kitDirs?.[0] === path.resolve(kit), "the kit folder is passed as a readable folder")
+
+const scopeOf = (name: string) => sourceScope(name, false, byName.get(name))
+assert(scopeOf("requirement-agent").brd && scopeOf("requirement-agent").figma && scopeOf("requirement-agent").repos, "RequirementAgent gets BRD, Figma and repos")
+assert(!scopeOf("test-design-agent").brd && !scopeOf("test-design-agent").repos, "TestDesignAgent must not get the BRD or repos")
+assert(!Object.values(scopeOf("story-agent")).some(Boolean), "StoryAgent declares no external sources")
+assert(scopeOf("deploy-agent").deploy, "DeployAgent gets deploy context")
+assert(sourceScope("sa", false).brd && !sourceScope("qa-design", false).brd, "built-in roles keep name-based scoping")
+assert(sourceScope("qa-design", true).brd, "group chat members still share the BRD")
+
+// The imported team runs end to end in draft mode, and the packet carries no skill text.
+const axianRoom = await runUntilWait(openRoom(team), team, project, async (packet, onDelta) => {
+  const out = runLocal(packet)
+  onDelta(out)
+  assert(buildPrompt(packet).length < 30_000, "prompt size should stay small for imported agents")
+  return { output: out }
+})
+assert(axianRoom.stages[0].name === "requirement-agent" && axianRoom.stages[0].status === "waiting_approval", "Axian run should stop at the first gate")
+
+// The real kit, when it is on this machine: 11 agents, ranks 0 to 7 on the team.
+const realKit = process.env.AXIAN_KIT_PATH || "D:/axian agents/squad-agent-kit"
+if (fs.existsSync(path.join(realKit, ".ai", "agents"))) {
+  const real = importAxian(tmp, "ws-2", realKit)
+  assert(real.agents.length === 11, `expected 11 Axian agents, got ${real.agents.length}`)
+  assert(real.team?.agentNames.length === 8 && real.team.agentNames[0] === "design-agent", "ranks 0 to 7 form the team")
+  assert(real.warnings.length === 0, `unexpected import warnings: ${real.warnings.join("; ")}`)
+  resolveTeamAgents(tmp, "ws-2", real.team!.agentNames) // every imported file must parse
+}
+fs.rmSync(tmp, { recursive: true, force: true })
+
+console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off, Axian import scoped")
