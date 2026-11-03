@@ -15,8 +15,10 @@
 | D1 | Product name | **Agentic Automation** |
 | D2 | Isolation unit naming | **Environment** (system + UI). Maps cleanly to multi-client SI work without colliding with login “workspace”. Optional subtitle in UI: “e.g. client or program”. |
 | D3 | Builder + Axian | **Both in scope.** User **imports Axian** → platform **converts** the recommended pipeline into an editable **drag-and-drop automation** in our builder. Import is the on-ramp; builder is the durable editing surface. |
+| D4 | Product scope | **General agent platform**, not an SDLC-only app. The SDLC flow (our 9 roles, or Axian’s 11) is **one template** among user-built automations. Importing **Axian agents** is a first-class feature. (2026-11-03) |
+| D5 | First build step | Start with an **Axian import spike** (slice B, into today’s workspace catalog + a default team), *then* the environment model (slice A). The spike settles the manifest and shows what an Environment must hold (skills, cluster context, repos). Moving imported agents from workspace to environment scope later is a small migration. (2026-11-03) |
 
-Still open: §12 Q4–Q14.
+Still open: §12 Q4–Q20.
 
 ---
 
@@ -159,6 +161,10 @@ Build **Agentic Automation** — a reusable SI delivery platform where teams log
 | TK-5 | Re-import / upgrade toolkit version with clear overwrite vs skip policy | P1 |
 | TK-6 | Toolkit badge/name visible on imported agents | P1 |
 | TK-7 | Skills from toolkit are either attached as libraries or folded into agent context on import | P1 |
+| TK-8 | Import **converts** toolkit agent files to the platform agent format without editing the toolkit’s source files (see §7.9) | P0 |
+| TK-9 | Each agent declares which **sources** it receives (BRD, Figma, repos, Jira, deploy URL…) in metadata; source scoping no longer depends on hard-coded role names (see §8.3) | P0 |
+| TK-10 | Toolkit **skills and cluster folders** are given to agents as readable folders, not pasted into the prompt | P0 |
+| TK-11 | Agent **mode** (e.g. DevOps `rca`, Deploy `test`) is a node property passed into the prompt | P1 |
 
 ### 6.6 Automations and multi-agent swarms
 | ID | Requirement | Priority |
@@ -179,7 +185,7 @@ Build **Agentic Automation** — a reusable SI delivery platform where teams log
 | AP-1 | No Jira/Confluence/Figma/GitHub/Jenkins write without Approve | P0 |
 | AP-2 | Permission cards show system, action, target, payload | P0 |
 | AP-3 | Deny leaves no external side effect | P0 |
-| AP-4 | Runtime tool-ask gate for live Cursor local runs | P1 |
+| AP-4 | Runtime tool-ask gate for live Cursor local runs | P1 (**exists**) |
 | AP-5 | Prefer cheap tool-capable model; writes executed by platform code after Approve | P0 |
 
 ### 6.8 Integrations
@@ -214,7 +220,7 @@ Build **Agentic Automation** — a reusable SI delivery platform where teams log
 Local kit: `D:\axian agents\squad-agent-kit`  
 Structure:
 - `.ai/agents/<Role>/<Name>Agent.md` — 11 agents  
-- `.ai/skills/` — 8 core skills + ~50 nested skills (POC-owned)  
+- `.ai/skills/` — 62 markdown files: one core skill per role (`<role>.md`) + nested skills in `<role>/` folders (POC-owned); tree in `.ai/skills/README.md`  
 - `.ai/cluster/` — Telecom / DnF / CLMS project context  
 - `AGENTS.md` — pipeline rules, standalone behaviour, approval rules  
 - `LOCAL.md` (not committed) — per-person key/intent (maps to Sprint room fields)  
@@ -298,7 +304,69 @@ automations:
 skills_root: .ai/skills
 ```
 
-Exact schema TBD after import spike.
+Exact schema TBD after import spike. The Axian kit has **no manifest file**, so Axian is imported by a **first-party adapter** that reads the folder layout and the rank table in `.ai/agents/README.md`. The manifest is for third-party toolkits.
+
+### 7.7 Axian agent file format (observed in the kit)
+
+Axian agent files do **not** match our agent format, so import must convert them, not copy them.
+
+| | Our agents (`agents/*.md`) | Axian agents (`.ai/agents/<Role>/<Name>Agent.md`) |
+| --- | --- | --- |
+| Header | Front matter: `name`, `title`, `needs_approval` (loader rejects files without it) | None. `# <Name> (<Role> · rank N · Gate N)` heading + “At a glance” table (rank, run by, skills, inputs, output, next) |
+| Offline output | Required `## Draft` section (loader rejects files without it) | None |
+| Context | The platform builds a packet (requirement, project file, sources, prior outputs, memory) | The agent is told to load files itself, in a fixed order: `LOCAL.md` → agent file → core skill → cluster file → project file → BRD/Figma/Jira/code |
+| First action | — | “Tool check”; stop if a tool is not connected |
+| Output | Chat reply (+ `## Write plan` table for external writes) | A file: `docs/requirements/<KEY>/NN-<name>.md` |
+| Approval | Stage gate (`needs_approval`) + one permission card per write | The person types **“approved”**; **each** external action needs its own approval |
+| Names | kebab-case (`software-lead`) | PascalCase, called by exact name (`RequirementAgent`) |
+| Size | ~50–150 lines | 15–73 lines each, but rely on skill files for depth |
+
+### 7.8 Per-agent import profile
+
+From the kit’s own rank table. “Sources” = what the platform must feed the agent (TK-9); “Code” = repo access.
+
+| Rank | Agent | LOCAL.md fields used | Sources the platform must give it | Code | Skills folder | Platform gap today |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | DesignAgent | Key, BRD/PRD link, Mode, Figma library link | BRD, Figma, project + cluster file; for `design-qa`: `05` output + Test build URL | — | `uiux-designer/` | none for `design`; Test-build screenshots partial |
+| 1 | RequirementAgent | Key, BRD/PRD link, Figma link | BRD, Figma, `00`, Jira + Confluence history | read | `system-analyst/` | Jira history read |
+| 2 | ArchitectAgent | Key | `01`, Confluence SD/API pages | read + measure | `solution-architect/` | baseline metrics |
+| 3 | TestDesignAgent | Key | `01`, `02` (Gate 3), Figma | — | `qa/` | — |
+| 4 | StoryAgent | Key | `01`–`03`, existing Jira stories | — | `system-analyst/` | Jira stories read |
+| 5 | DeveloperAgent | Key, Code root, Track | `04`, `02`, Figma, API signature | **write** (platform: snapshot read + PR on Approve) | `developer/` by track | write is PR-only on platform |
+| 6 | DeployAgent | Key, Mode (`dev`·`test`) | `05`, pipeline + cluster (read-only) | — | `developer/` | cluster read |
+| 7 | TestExecutionAgent | Key | `03`, `06`, Test environment URL | — | `qa/` | — |
+| 8 | DevOpsAgent | Key or INC id, Mode, Period | logs, metrics, cluster, pipeline, `06` | — | `devops/` by mode | metrics/cluster read; only `DEVOPS_LOG_PROBE_URL` today |
+| 9 | PmAgent | Projects, Mode, Period | Jira worklogs/issues/versions, requirement folders, rate card | — | `pm/` by mode | Jira worklog read; deck/PDF output |
+| 10 | AuditorAgent | Projects, Mode, Period | Jira, git history, requirement + incident folders, PM outputs, Confluence | read (history) | `auditor/` by mode | git history read |
+
+Ranks 0–7 are the **v1 import target**. Ranks 8–10 import as catalog agents and run with whatever sources exist, listing missing ones as gaps (Axian “standalone by default” rule).
+
+### 7.9 Conversion rules (import adapter)
+
+1. **Do not edit the toolkit’s files.** Keep the Axian agent text as-is (Toolkit author persona: “import without rewrite”). Add platform behaviour through a **toolkit adapter preamble** put before the agent text in the prompt.
+2. **Front matter is generated** per agent: `name` (slug of the file name, e.g. `requirement-agent`; exact Axian name kept as display/alias), `title` (`RequirementAgent — System Analyst`), `needs_approval`, `tools`, `toolkit: axian-squad`, `toolkit_version`, `rank`, `sources` (from §7.8), `skills` (folder from §7.8).
+3. **Offline Draft is generated** from the agent’s Scope section headings, marked as an offline placeholder, so draft mode still runs end-to-end.
+4. **Adapter preamble** tells the agent:
+   - the `LOCAL.md` fields (Key, BRD/PRD, Figma, Intent, Mode, Period, Track) are in the sprint room’s Requirement and Setup fields — do not look for `LOCAL.md`;
+   - prior outputs (`00`–`07`) are in “Earlier role outputs”; missing ones mean work standalone;
+   - the skills and cluster folders are readable at the given paths — load the core skill, then only the nested skills its table names;
+   - write the output **as the chat reply** (the content of `NN-<name>.md`), not to a file;
+   - “approved” = the platform’s Approve button; propose each external action as its own write (runtime tool or Write plan row).
+5. **Skills + cluster folders** are passed to the agent as readable folders (same mechanism as code snapshots), never pasted into the prompt (TK-10, CO-4).
+6. **Default automation** = §7.4, built from the rank table. Stage gates (pause for review) go where §7.4 shows `[Human approve …]`; per-action approvals stay on permission cards.
+7. **Modes** become a node property (TK-11) and are added to the prompt as `Mode: <value>`.
+8. **Customer-facing text rule** (§7.3.4) is kept in the preamble; enforcement level is Q14.
+
+### 7.10 Import spike — scope and acceptance (slice B, step 1)
+
+Scope: import from a **folder path on the server machine** (the kit is local); zip/git import later (Q17). Imports into today’s **workspace** catalog and creates an “Axian Squad” team in rank order 0–7.
+
+Accepted when:
+- All 11 agents appear in the catalog with a toolkit badge; the kit folder is unchanged.
+- The Axian team runs end-to-end in **draft mode**.
+- RequirementAgent’s packet contains BRD, Figma and repos; TestDesignAgent’s does not contain the BRD (scoping by metadata, TK-9).
+- Skills appear as a readable folder, not as prompt text; prompt size stays within a set budget.
+- `npm run check` gains checks for the above, and still finds no credentials in prompts.
 
 ---
 
@@ -320,6 +388,17 @@ Exact schema TBD after import spike.
 - Formal cost/model policy UX  
 - Toolkit versioning / upgrade  
 
+### 8.3 Engine constraints that block import / environments (found 2026-11-03)
+| Constraint today | Where | Why it matters | Fix (slice) |
+| --- | --- | --- | --- |
+| Agent loader requires front matter **and** a `## Draft` section | `src/agents.ts` `parseAgent` | Raw Axian files are rejected | Import generates both (§7.9) — B |
+| Source scoping is by **hard-coded role name** (`sa`, `software-lead`, `architecture`, `coding`) | `src/server.ts` `loadSourcesForRole` | Imported agents would get **no** BRD/Figma/repo sources | Per-agent `sources` metadata (TK-9) — B |
+| Group kickoff members are fixed (`sa`, `software-lead`, `qa-design`) | `src/group.ts` `DEFAULT_MEMBERS` | Axian users get no group discussion | Swarm node with chosen members — E |
+| Custom agents are scoped by **workspace** | `data/custom-agents/<workspaceId>/` | AG-4 wants environment scope | Migrate with slice A (D5) |
+| **One room** per server | `data/room.json` | No multiple sprint rooms / environments | Store change — A |
+| **One run per server** (global `busy` flag) | `src/server.ts` | A second user in another environment is blocked | Per-room run lock — A |
+| Prompt always says “do not create files” and expects a chat reply | `src/runner.ts` `buildPrompt` | Axian agents expect to write `docs/requirements/…` | Adapter preamble: output = chat reply (§7.9.4); export is Q9 |
+
 ---
 
 ## 9. Proposed delivery slices
@@ -335,8 +414,10 @@ Exact schema TBD after import spike.
 | **G – Cost defaults** | Cheap tool model default + high-reasoning toggle |
 | **H – Branches** | Conditions / skip paths (later) |
 
-Recommended build order: **A → B → D → F → C → E → G → H**  
-(Import and builder land early so Axian conversion is real, not a stub list.)
+Recommended build order: **B (import spike) → A → B (finish: environment scope) → D → F → C → E → G → H**  
+(D5: the import spike runs first on today’s workspace catalog; then environments; then import moves to environment scope. Import and builder land early so Axian conversion is real, not a stub list.)
+
+Builder note: automations are stored as a **graph** from the first slice (AU-1), even while early UI shows them as a list, so the drag-and-drop canvas (D) is a new view of the same data, not a migration.
 
 ---
 
@@ -349,6 +430,10 @@ Recommended build order: **A → B → D → F → C → E → G → H**
 | OAuth scope confusion | Checklist + Disconnect/Connect guidance |
 | Mixing client data | Environment isolation as P0 |
 | Builder complexity kills adoption | Import lands a ready-made graph; builder starts from that, not blank canvas |
+| Imported agents silently get no sources (role-name scoping) | Per-agent `sources` metadata (TK-9) + walkthrough check |
+| Axian kit changes break the adapter (no manifest, format by convention) | Adapter reads the rank table + folder layout; import report lists anything it could not map; pin `toolkit_version` |
+| Ranks 8–10 need data we cannot read yet (Jira worklogs, git history, metrics) | Import them, run standalone, list missing sources as gaps; add read integrations later |
+| “Never mention AI” in customer-facing text vs. client AI-disclosure policies | Decide Q14; always keep an **internal** audit trail (approved by whom, proposed by which agent) whatever the outbound text says |
 
 ---
 
@@ -357,7 +442,7 @@ Recommended build order: **A → B → D → F → C → E → G → H**
 1. Axian user imports Squad in &lt; 5 minutes and runs default automation on a sample key.  
 2. SI lead maintains ≥2 environments without cross-talk of repos/memory.  
 3. Zero external writes without an Approve click in walkthrough + manual test.  
-4. New user completes first Approve using only in-app Help (no engineer sitting next to them).
+4. A first-time tester completes the §5.1 happy path to the first Approve **in under 15 minutes using only in-app Help** (measured in a usability session; target time to confirm).
 
 ---
 
@@ -391,6 +476,35 @@ Recommended build order: **A → B → D → F → C → E → G → H**
 #### Compliance
 14. Customer-facing Jira/Figma/Confluence comments must **never** mention AI/agents (Axian rule) — enforce in prompts only, or also filter outbound text?
 
+#### New (from import analysis, 2026-11-03)
+15. Are agents, toolkits and OAuth connections owned by the **workspace** or by the **environment**?  
+16. Imported agent names: platform slug (`requirement-agent`) with the Axian name as display alias, or keep `RequirementAgent` as the id?  
+17. Import source for v1: **folder path on the server** only, or also **zip upload** / **git URL**?  
+18. Ranks 8–10 (DevOps, PM, Auditor): import in v1 as catalog agents with known source gaps, or hold until the read integrations exist?  
+19. Re-import when the kit changes: overwrite agents the user has edited, keep them, or ask per agent?  
+20. Should the stage gates in the default Axian automation (§7.4) be on by default, or rely only on per-action permission cards?
+
+### Proposed answers (for discussion, not locked)
+| Q | Proposal | Why |
+| --- | --- | --- |
+| 4 | Skills as a **separate library**, given as a readable folder | Keeps prompts small (CO-4); toolkit stays upgradeable |
+| 5 | PM + Auditor as **separate templates**, off the main path | Matches the kit (“standalone, any time”) |
+| 6 | DesignAgent as an **optional first node**, off by default | Most sprints start from an existing design |
+| 7 | **Later**; v1 lets the person paste cluster text into the environment profile | Avoids a second import format in v1 |
+| 8 | **Personal** in v1, but store `ownerId` so sharing needs no migration | Smallest safe start |
+| 9 | UI/memory in v1; **export** to `docs/requirements/<KEY>/` as a later button | Axian users can keep their file trail |
+| 10 | **Draft** when no key; **Cursor local** for demos | Local runs support runtime approvals |
+| 11 | **Yes — lock it**: executors stay in platform code | AP-1 and AP-3 depend on it |
+| 12 | **Leads/admins edit**, members run | Protects shared automations |
+| 13 | **Create environment** first, then “Import Axian” as the next step | Import needs an environment to land in |
+| 14 | Prompt rule + **internal audit trail always kept**; outbound filter optional | Transparency stays internal even if outbound text is plain |
+| 15 | **Environment** owns agents, toolkits, repos; **user** owns OAuth tokens | Client isolation (ENV-4) |
+| 16 | Slug id + Axian name as alias | Fits existing catalog naming |
+| 17 | **Folder path** in v1 | The kit is local; zip/git later |
+| 18 | **Import all 11**, mark source gaps | Standalone rule makes them usable |
+| 19 | **Ask per edited agent**; overwrite unedited ones | No silent loss of user edits |
+| 20 | **On** by default where §7.4 shows them | Same human control the kit expects
+
 ---
 
 ## 13. Document history
@@ -399,3 +513,4 @@ Recommended build order: **A → B → D → F → C → E → G → H**
 | --- | --- |
 | 2026-11-03 | Initial draft from product discussion + Axian kit review + current agents-app capabilities |
 | 2026-11-03 | Locked D1–D3: name **Agentic Automation**, term **Environment**, Axian import → drag-drop builder conversion; elevated builder to P0; reordered slices |
+| 2026-11-03 | D4 general platform, D5 import spike first; §7.7–7.10 Axian format, per-agent profile, conversion rules, spike acceptance; TK-8–11; §8.3 engine constraints; risks; measurable success 4; Q15–Q20 + proposed answers |
