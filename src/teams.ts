@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { prebuiltAgents } from "./catalog.js"
+import { compileGraph, linearGraph, type AutomationGraph } from "./graph.js"
 
 export type TeamRecord = {
   id: string
@@ -11,6 +12,8 @@ export type TeamRecord = {
   agentNames: string[]
   /** agentName → needsApproval override (optional) */
   approvalMap: Record<string, boolean>
+  /** The canvas layout. When present, agentNames and approvalMap are compiled from it. */
+  graph?: AutomationGraph
   isDefault: boolean
   createdAt: string
   updatedAt: string
@@ -84,9 +87,14 @@ export function createTeam(
     description?: string
     agentNames: string[]
     approvalMap?: Record<string, boolean>
+    graph?: AutomationGraph
   },
 ): TeamRecord {
   if (!input.name.trim()) throw new Error("Team name required")
+  if (input.graph) {
+    const compiled = compileGraph(input.graph)
+    input = { ...input, agentNames: compiled.agentNames, approvalMap: compiled.approvalMap }
+  }
   if (!input.agentNames?.length) throw new Error("Pick at least one agent")
 
   const store = readStore(root)
@@ -97,6 +105,7 @@ export function createTeam(
     description: (input.description || "").trim().slice(0, 240),
     agentNames: input.agentNames,
     approvalMap: input.approvalMap || {},
+    ...(input.graph ? { graph: input.graph } : {}),
     isDefault: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -110,7 +119,7 @@ export function updateTeam(
   root: string,
   workspaceId: string,
   teamId: string,
-  patch: Partial<Pick<TeamRecord, "name" | "description" | "agentNames" | "approvalMap">>,
+  patch: Partial<Pick<TeamRecord, "name" | "description" | "agentNames" | "approvalMap" | "graph">>,
 ): TeamRecord {
   const store = readStore(root)
   const team = store.teams.find((item) => item.id === teamId)
@@ -118,11 +127,22 @@ export function updateTeam(
   if (team.workspaceId !== workspaceId) throw new Error("Cannot edit this team")
   if (patch.name !== undefined) team.name = patch.name.trim().slice(0, 80)
   if (patch.description !== undefined) team.description = patch.description.trim().slice(0, 240)
-  if (patch.agentNames !== undefined) {
-    if (!patch.agentNames.length) throw new Error("Pick at least one agent")
-    team.agentNames = patch.agentNames
+  if (patch.graph !== undefined) {
+    const compiled = compileGraph(patch.graph)
+    team.graph = patch.graph
+    team.agentNames = compiled.agentNames
+    team.approvalMap = compiled.approvalMap
+  } else {
+    if (patch.agentNames !== undefined) {
+      if (!patch.agentNames.length) throw new Error("Pick at least one agent")
+      team.agentNames = patch.agentNames
+      delete team.graph // the list changed, so the old canvas no longer matches
+    }
+    if (patch.approvalMap !== undefined) {
+      team.approvalMap = patch.approvalMap
+      delete team.graph
+    }
   }
-  if (patch.approvalMap !== undefined) team.approvalMap = patch.approvalMap
   team.updatedAt = new Date().toISOString()
   writeStore(root, store)
   return team
@@ -135,4 +155,9 @@ export function deleteTeam(root: string, workspaceId: string, teamId: string): v
   if (team.isDefault || team.workspaceId !== workspaceId) throw new Error("Cannot delete this team")
   store.teams = store.teams.filter((item) => item.id !== teamId)
   writeStore(root, store)
+}
+
+/** The team's canvas. Teams made as plain lists get a straight chain. */
+export function teamGraph(team: TeamRecord): AutomationGraph {
+  return team.graph ?? linearGraph(team.agentNames, team.approvalMap)
 }

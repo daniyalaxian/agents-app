@@ -27,7 +27,9 @@ import {
   getTeam,
   listTeams,
   updateTeam,
+  teamGraph,
 } from "./teams.js"
+import { parseGraph } from "./graph.js"
 import { loadEnv } from "./env.js"
 import {
   addConfluenceFooterComment,
@@ -370,7 +372,7 @@ app.post("/api/toolkits/axian/import", (req, res) => {
 app.get("/api/teams", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const user = userForSession(root, sessionId)
-  res.json({ teams: listTeams(root, userScope(user)) })
+  res.json({ teams: listTeams(root, userScope(user)).map((team) => ({ ...team, graph: teamGraph(team) })) })
 })
 
 app.post("/api/teams", (req, res) => {
@@ -386,8 +388,9 @@ app.post("/api/teams", (req, res) => {
       agentNames,
       approvalMap:
         req.body?.approvalMap && typeof req.body.approvalMap === "object" ? req.body.approvalMap : undefined,
+      graph: req.body?.graph ? parseGraph(req.body.graph) : undefined,
     })
-    res.json({ team })
+    res.json({ team: { ...team, graph: teamGraph(team) } })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Create team failed" })
   }
@@ -405,8 +408,9 @@ app.post("/api/teams/:id", (req, res) => {
         : undefined,
       approvalMap:
         req.body?.approvalMap && typeof req.body.approvalMap === "object" ? req.body.approvalMap : undefined,
+      graph: req.body?.graph ? parseGraph(req.body.graph) : undefined,
     })
-    res.json({ team })
+    res.json({ team: { ...team, graph: teamGraph(team) } })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Update team failed" })
   }

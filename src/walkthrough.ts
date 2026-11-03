@@ -10,6 +10,8 @@ import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
+import { compileGraph, linearGraph, parseGraph } from "./graph.js"
+import { createTeam, teamGraph, updateTeam } from "./teams.js"
 import { sourceScope } from "./scope.js"
 import { importAxian } from "./toolkit.js"
 import { PermissionGate } from "./gate.js"
@@ -399,6 +401,41 @@ const hasAgent = (scope: string | null) => listCatalog(scopeRoot, scope).some((a
 assert(hasAgent(scopeFor("ws-a", envA.id)), "an agent made in an environment is visible there")
 assert(!hasAgent(scopeFor("ws-a", "env-default")) && !hasAgent(scopeFor("ws-a", "env-other")), "it must not leak into Default or another environment")
 fs.rmSync(scopeRoot, { recursive: true, force: true })
+
+// Automations are graphs that compile to the ordered list the engine runs.
+const chain = linearGraph(["sa", "coding", "devops"], { coding: true })
+assert(compileGraph(chain).agentNames.join() === "sa,coding,devops" && compileGraph(chain).approvalMap.coding === true, "a chain compiles to its order and gates")
+const shuffled = { nodes: [...chain.nodes].reverse(), edges: [...chain.edges].reverse() }
+assert(compileGraph(shuffled).agentNames.join() === "sa,coding,devops", "order follows the edges, not the node list")
+const graphError = (graph: { nodes: ReturnType<typeof linearGraph>["nodes"]; edges: { from: string; to: string }[] }) => {
+  try {
+    compileGraph(graph)
+    return ""
+  } catch (error) {
+    return error instanceof Error ? error.message : "?"
+  }
+}
+assert(graphError({ nodes: chain.nodes, edges: [...chain.edges, { from: "n1", to: "n3" }] }).includes("Branches"), "a branch is refused clearly")
+assert(graphError({ nodes: chain.nodes, edges: [...chain.edges, { from: "n3", to: "n1" }] }).includes("loops"), "a loop is refused")
+assert(graphError({ nodes: chain.nodes, edges: [chain.edges[0]] }).includes("one chain"), "a detached agent is refused")
+assert(graphError({ nodes: [...chain.nodes, { ...chain.nodes[0], id: "n9" }], edges: chain.edges }).includes("twice"), "the same agent twice is refused")
+let notAGraph = ""
+try {
+  parseGraph({ nodes: "x" })
+} catch (error) {
+  notAGraph = error instanceof Error ? error.message : ""
+}
+assert(notAGraph.includes("nodes and edges"), "junk input is not a graph")
+const teamRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teams-"))
+fs.cpSync(path.join(root, "agents"), path.join(teamRoot, "agents"), { recursive: true })
+const names = listCatalog(teamRoot, null).map((agent) => agent.name)
+const made = createTeam(teamRoot, "ws-a", { name: "Canvas team", agentNames: [], graph: linearGraph(names.slice(0, 3), { [names[1]]: true }) })
+assert(made.agentNames.join() === names.slice(0, 3).join() && made.approvalMap[names[1]] === true, "a graph team stores the compiled list")
+const flat = createTeam(teamRoot, "ws-a", { name: "List team", agentNames: names.slice(0, 2) })
+assert(teamGraph(flat).edges.length === 1, "a plain list team shows as a chain")
+const edited = updateTeam(teamRoot, "ws-a", made.id, { agentNames: names.slice(0, 2) })
+assert(!edited.graph && edited.agentNames.length === 2, "editing the list drops a stale canvas")
+fs.rmSync(teamRoot, { recursive: true, force: true })
 
 if (savedDataDir === undefined) delete process.env.DATA_DIR
 else process.env.DATA_DIR = savedDataDir
