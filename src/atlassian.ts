@@ -3,7 +3,7 @@ import type { SourceDoc } from "./types.js"
 
 // Confluence page read + Jira read for board/project context.
 // Ticket create/update scopes are added later and only used after human approval.
-const SCOPES = [
+export const SCOPES = [
   "read:page:confluence",
   "write:comment:confluence",
   "read:jira-work",

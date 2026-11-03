@@ -133,6 +133,7 @@
             <button class="tab" type="button" data-tab="memory">Memory</button>
             <button class="tab" type="button" data-tab="team">Team &amp; agents</button>
             <button class="tab" type="button" data-tab="account">Account</button>
+            <button class="tab" type="button" data-tab="help">Help</button>
           </div>
 
           <div class="tab-panel" data-panel="sources">
@@ -194,6 +195,19 @@
             </form>
           </div>
 
+          <div class="tab-panel" data-panel="help" hidden>
+            <h3>Your first 5 minutes</h3>
+            <ol class="help-steps">
+              <li><b>Check the setup</b> below. Draft mode (no model key) works for a dry run; add a Cursor key for real answers.</li>
+              <li><b>Sign in</b> under Account so your agents, automations and environments are saved.</li>
+              <li><b>Create an environment</b> for the client or program (sidebar → + New environment). Each environment keeps its own rooms, agents and memory.</li>
+              <li><b>Bring in agents.</b> Import the Axian Squad under Team &amp; agents, or copy a built-in agent and edit it. Arrange them in the Automation builder.</li>
+              <li><b>Connect sources</b> (Confluence, Figma, GitHub) in Sprint sources, paste the requirement, and start the kickoff.</li>
+              <li><b>Approve as you go.</b> Agents pause for your OK between steps, and every write to Jira, Confluence, Figma, GitHub or Jenkins waits for you to press Allow.</li>
+            </ol>
+            <h3>Setup checklist</h3>
+            <ul id="setup-check" class="memory-list"></ul>
+          </div>
           <div class="tab-panel" data-panel="account" hidden>
             <p class="lead">Sign in to save your own agents and teams. Guest mode works for the default team.</p>
             <div id="account-signed-in" class="card" hidden>

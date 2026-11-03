@@ -1219,3 +1219,10 @@ details summary {
 .bnode strong { display: block; margin-bottom: 4px; }
 .bnode .bn-row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .bnode button { border: 0; background: transparent; cursor: pointer; color: var(--muted); padding: 0 4px; }
+
+.help-steps { margin: 6px 0 14px; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; }
+.check-item.ok .mem-kind { color: #2e7d32; }
+.check-item.todo .mem-kind { color: #c0392b; }
+.check-item dl { margin: 6px 0 0; font-size: 12px; }
+.check-item dt { color: var(--faint); margin-top: 4px; }
+.check-item dd { margin: 0; display: flex; gap: 6px; align-items: center; word-break: break-all; }

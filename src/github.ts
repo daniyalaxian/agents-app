@@ -18,7 +18,7 @@ export type ParsedRepo = {
 }
 
 // Identity + repo access for PR creation after human Approve.
-const SCOPES = ["read:user", "repo"].join(" ")
+export const SCOPES = ["read:user", "repo"].join(" ")
 
 export function githubConfig(baseUrl: string): GitHubConfig | null {
   const clientId = process.env.GITHUB_CLIENT_ID?.trim()

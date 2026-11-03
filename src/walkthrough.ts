@@ -12,6 +12,7 @@ import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpea
 import { duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { compileGraph, linearGraph, parseGraph } from "./graph.js"
 import { createTeam, teamGraph, updateTeam } from "./teams.js"
+import { setupChecklist } from "./setup.js"
 import { sourceScope } from "./scope.js"
 import { importAxian } from "./toolkit.js"
 import { PermissionGate } from "./gate.js"
@@ -436,6 +437,27 @@ assert(teamGraph(flat).edges.length === 1, "a plain list team shows as a chain")
 const edited = updateTeam(teamRoot, "ws-a", made.id, { agentNames: names.slice(0, 2) })
 assert(!edited.graph && edited.agentNames.length === 2, "editing the list drops a stale canvas")
 fs.rmSync(teamRoot, { recursive: true, force: true })
+
+// Help checklist: tells the person exactly what to enter in each console, and never carries a secret.
+const bare = {
+  baseUrl: "https://agents.example.com/",
+  engine: "draft",
+  signedIn: false,
+  atlassian: { configured: false, connected: false, scopes: ["read:page:confluence", "offline_access"], extraScopes: ["read:comment:confluence"] },
+  figma: { configured: true, connected: false, scopes: ["file_content:read"], hasToken: false },
+  github: { configured: true, connected: true, scopes: ["repo"] },
+  jenkinsConfigured: false,
+  codeWorkspaceSet: false,
+  designsDirSet: false,
+}
+const check = setupChecklist(bare)
+const item = (id: string) => check.find((entry) => entry.id === id)!
+assert(item("model").status === "todo" && item("account").status === "todo", "draft mode and guests are flagged")
+assert(item("atlassian").copy?.[0].value === "https://agents.example.com/auth/atlassian/callback", "the callback URL is built from the base URL")
+assert(item("atlassian").copy?.[1].value.includes("read:comment:confluence"), "extra Atlassian scopes appear in the list to enter")
+assert(item("atlassian").status === "todo" && item("figma").status === "todo" && item("github").status === "ok", "each provider shows its own state")
+assert(item("jenkins").status === "optional" && item("code").status === "optional", "optional pieces are not blockers")
+assert(setupChecklist({ ...bare, figma: { ...bare.figma, hasToken: true } }).find((entry) => entry.id === "figma")?.status === "ok", "a Figma token counts as connected")
 
 if (savedDataDir === undefined) delete process.env.DATA_DIR
 else process.env.DATA_DIR = savedDataDir

@@ -30,6 +30,10 @@ import {
   teamGraph,
 } from "./teams.js"
 import { parseGraph } from "./graph.js"
+import { setupChecklist } from "./setup.js"
+import { SCOPES as ATLASSIAN_SCOPES } from "./atlassian.js"
+import { SCOPES as FIGMA_SCOPES } from "./figma.js"
+import { SCOPES as GITHUB_SCOPES } from "./github.js"
 import { loadEnv } from "./env.js"
 import {
   addConfluenceFooterComment,
@@ -194,6 +198,39 @@ app.get("/api/session", (req, res) => {
     github: github
       ? { connected: true, userLogin: github.userLogin, userName: github.userName }
       : { connected: false },
+  })
+})
+
+/** Help → setup checklist: what is configured and the exact values to enter in each developer console. */
+app.get("/api/setup-check", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  const split = (value: string) => value.split(/[s,]+/).filter(Boolean)
+  res.json({
+    items: setupChecklist({
+      baseUrl,
+      engine: engineName(),
+      signedIn: Boolean(userForSession(root, sessionId)),
+      atlassian: {
+        configured: Boolean(atlassianConfig(baseUrl)),
+        connected: Boolean(credentials.getAtlassian(sessionId)),
+        scopes: split(ATLASSIAN_SCOPES),
+        extraScopes: split(process.env.ATLASSIAN_EXTRA_SCOPES ?? ""),
+      },
+      figma: {
+        configured: Boolean(figmaConfig(baseUrl)),
+        connected: Boolean(credentials.getFigma(sessionId)),
+        scopes: split(FIGMA_SCOPES),
+        hasToken: Boolean(process.env.FIGMA_ACCESS_TOKEN?.trim()),
+      },
+      github: {
+        configured: Boolean(githubConfig(baseUrl)),
+        connected: Boolean(credentials.getGitHub(sessionId)),
+        scopes: split(GITHUB_SCOPES),
+      },
+      jenkinsConfigured: Boolean(jenkinsConfig()),
+      codeWorkspaceSet: Boolean(process.env.CODE_WORKSPACE?.trim()),
+      designsDirSet: Boolean(process.env.DESIGNS_DIR?.trim()),
+    }),
   })
 })
 

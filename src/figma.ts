@@ -34,7 +34,7 @@ export function tokenAuth(): FigmaAuth | null {
 }
 
 // Read + comment write (comments only executed after human Approve).
-const SCOPES = [
+export const SCOPES = [
   "current_user:read",
   "file_metadata:read",
   "file_content:read",

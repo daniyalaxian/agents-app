@@ -207,6 +207,7 @@ function showTab(name) {
     panel.hidden = panel.getAttribute("data-panel") !== name
   }
   if (name === "memory") loadMemory()
+  if (name === "help") loadHelp()
   if (name === "team") {
     loadTeams()
     loadCatalog()
@@ -1299,6 +1300,37 @@ $("#builder-save").addEventListener("click", async () => {
   await loadTeams()
 })
 
+// ---------- Help ----------
+
+const CHECK_LABEL = { ok: "Done", todo: "To do", optional: "Optional" }
+
+async function loadHelp() {
+  const payload = await fetch("/api/setup-check").then((response) => response.json()).catch(() => null)
+  const list = $("#setup-check")
+  if (!payload?.items) {
+    list.innerHTML = "<li class=\"card\">Could not load the checklist.</li>"
+    return
+  }
+  list.innerHTML = payload.items
+    .map((item) => {
+      const copy = (item.copy || [])
+        .map((row) => `<dt>${escape(row.label)}</dt><dd><code>${escape(row.value)}</code> <button type="button" class="ghost small" data-copy="${escape(row.value)}">Copy</button></dd>`)
+        .join("")
+      return `<li class="card check-item ${item.status}"><div class="mem-kind">${CHECK_LABEL[item.status]}</div><strong>${escape(item.label)}</strong><div class="lead">${escape(item.detail)}</div>${copy && item.status !== "ok" ? `<dl>${copy}</dl>` : ""}</li>`
+    })
+    .join("")
+}
+
+$("#setup-check").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-copy]")
+  if (!button) return
+  try {
+    await navigator.clipboard.writeText(button.getAttribute("data-copy"))
+    button.textContent = "Copied"
+  } catch {
+    button.textContent = "Select and copy"
+  }
+})
 async function loadTeams() {
   const payload = await fetch("/api/teams").then((response) => response.json())
   const activeId = lastRoom?.teamId
