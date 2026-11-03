@@ -1,13 +1,19 @@
 import fs from "node:fs"
 import path from "node:path"
-import type { Packet } from "./types.js"
+import type { SDKAgent, ToolName } from "@cursor/sdk"
+import { cursorCustomTools, TOOL_RULES, type RuntimeTools } from "./tools.js"
+import type { AgentFile, Packet, SourceDoc } from "./types.js"
 
 export type RunOutput = {
   output: string
   agentId?: string
 }
 
-export type StageRunner = (packet: Packet, onDelta: (text: string) => void) => Promise<RunOutput>
+export type StageRunner = (
+  packet: Packet,
+  onDelta: (text: string) => void,
+  tools?: RuntimeTools,
+) => Promise<RunOutput>
 
 export function engineName(): "draft" | "cursor-local" | "cursor-cloud" {
   if (!apiKey()) return "draft"
@@ -22,7 +28,7 @@ export function selectRunner(workdir: string): StageRunner {
       return { output }
     }
   }
-  return (packet, onDelta) => runCursor(packet, onDelta, workdir)
+  return (packet, onDelta, tools) => runCursor(packet, onDelta, workdir, tools)
 }
 
 export function runLocal(packet: Packet): string {
@@ -39,7 +45,12 @@ export function runLocal(packet: Packet): string {
     .trim()
 }
 
-export function buildPrompt(packet: Packet): string {
+/** Runtime permission tools need in-process callbacks, so local runtime only. */
+export function supportsRuntimeTools(): boolean {
+  return engineName() === "cursor-local"
+}
+
+export function buildPrompt(packet: Packet, withTools = false): string {
   const notes = packet.notes.length > 0 ? packet.notes.map((note) => `- ${note}`).join("\n") : "None"
   const prior =
     packet.prior.length > 0
@@ -60,6 +71,7 @@ export function buildPrompt(packet: Packet): string {
     "If a source does not contain the answer, record a gap and ask. Do not invent a business or technical requirement.",
     "Never mention access tokens, refresh tokens, API keys, or credentials.",
     "Cite shared memory entries when you reuse a gap, decision, test, or approval.",
+    ...(withTools ? ["", TOOL_RULES] : []),
     "",
     "# Role instructions",
     packet.role.instructions,
@@ -88,43 +100,27 @@ export function buildPrompt(packet: Packet): string {
   return parts.join("\n")
 }
 
-async function runCursor(packet: Packet, onDelta: (text: string) => void, workdir: string): Promise<RunOutput> {
+async function runCursor(
+  packet: Packet,
+  onDelta: (text: string) => void,
+  workdir: string,
+  tools?: RuntimeTools,
+): Promise<RunOutput> {
   const key = apiKey()
   if (!key) throw new Error("CURSOR_API_KEY is not set")
 
   fs.mkdirSync(workdir, { recursive: true })
   const { Agent, CursorAgentError } = await import("@cursor/sdk")
-  const prompt = buildPrompt(packet)
+  const liveTools = tools && supportsRuntimeTools() ? tools : undefined
+  const prompt = buildPrompt(packet, Boolean(liveTools))
   fs.writeFileSync(path.join(workdir, "last-prompt.md"), prompt)
 
   try {
     await using agent = await Agent.create({
-      apiKey: key,
-      model: { id: process.env.CURSOR_MODEL?.trim() || "composer-2.5" },
-      mode: "agent",
-      ...runtimeOptions(workdir),
+      ...agentOptions(key),
+      ...runtimeOptions(workdir, liveTools, codeDirs(packet.sources)),
     })
-
-    let streamed = ""
-    const run = await agent.send(prompt, {
-      onDelta: ({ update }) => {
-        if (update.type === "text-delta" && update.text) {
-          streamed += update.text
-          onDelta(update.text)
-        }
-      },
-    })
-    console.log(`cursor role=${packet.role.name} agent=${agent.agentId} run=${run.id}`)
-    const result = await run.wait()
-    if (result.status === "error") {
-      throw new Error(result.error?.message ?? `Cursor run ${run.id} failed`)
-    }
-    if (result.status === "cancelled") {
-      throw new Error(`Cursor run ${run.id} was cancelled`)
-    }
-    const output = (result.result ?? streamed).trim()
-    if (!output) throw new Error(`Cursor run ${run.id} returned an empty reply`)
-    return { output, agentId: agent.agentId }
+    return await sendAndWait(agent, prompt, packet.role.name, onDelta)
   } catch (error) {
     if (error instanceof CursorAgentError) {
       throw new Error(`Cursor did not start: ${error.message}`)
@@ -133,7 +129,107 @@ async function runCursor(packet: Packet, onDelta: (text: string) => void, workdi
   }
 }
 
-function runtimeOptions(workdir: string) {
+/** One speaker turn in a multi-turn conversation (group chat). */
+export type TurnInput = {
+  role: AgentFile
+  /** Cursor agent from this speaker's earlier turns; resumed so it keeps its own context. */
+  agentId: string | null
+  /** Full context for a fresh agent: role, sources, rules and the transcript so far. */
+  fullPrompt: () => Promise<string>
+  /** Only what is new since this speaker last spoke. Sent when the agent is resumed. */
+  followUp: string
+  /** Offline reply used in draft mode. */
+  draft: string
+  tools?: RuntimeTools
+  /** Code snapshot folders this speaker may read. */
+  dirs?: string[]
+}
+
+export type TurnRunner = (input: TurnInput, onDelta: (text: string) => void) => Promise<RunOutput>
+
+export function selectTurnRunner(workdir: string): TurnRunner {
+  if (!apiKey()) {
+    return async (input, onDelta) => {
+      onDelta(input.draft)
+      return { output: input.draft }
+    }
+  }
+  return (input, onDelta) => runCursorTurn(input, onDelta, workdir)
+}
+
+async function runCursorTurn(input: TurnInput, onDelta: (text: string) => void, workdir: string): Promise<RunOutput> {
+  const key = apiKey()
+  if (!key) throw new Error("CURSOR_API_KEY is not set")
+
+  fs.mkdirSync(workdir, { recursive: true })
+  const { Agent, CursorAgentError } = await import("@cursor/sdk")
+  const liveTools = input.tools && supportsRuntimeTools() ? input.tools : undefined
+  const options = { ...agentOptions(key), ...runtimeOptions(workdir, liveTools, input.dirs) }
+
+  try {
+    if (input.agentId) {
+      try {
+        await using resumed = await Agent.resume(input.agentId, options)
+        return await sendAndWait(resumed, input.followUp, input.role.name, onDelta)
+      } catch (error) {
+        // The local agent store may have lost it; start fresh with the full transcript.
+        console.warn(`cursor resume failed role=${input.role.name}: ${error instanceof Error ? error.message : error}`)
+      }
+    }
+    const prompt = await input.fullPrompt()
+    fs.writeFileSync(path.join(workdir, `last-prompt-${input.role.name}.md`), prompt)
+    await using agent = await Agent.create(options)
+    return await sendAndWait(agent, prompt, input.role.name, onDelta)
+  } catch (error) {
+    if (error instanceof CursorAgentError) {
+      throw new Error(`Cursor did not start: ${error.message}`)
+    }
+    throw error
+  }
+}
+
+function agentOptions(key: string) {
+  return {
+    apiKey: key,
+    model: { id: process.env.CURSOR_MODEL?.trim() || "composer-2.5" },
+    mode: "agent" as const,
+  }
+}
+
+async function sendAndWait(
+  agent: SDKAgent,
+  prompt: string,
+  roleName: string,
+  onDelta: (text: string) => void,
+): Promise<RunOutput> {
+  let streamed = ""
+  const run = await agent.send(prompt, {
+    onDelta: ({ update }) => {
+      if (update.type === "text-delta" && update.text) {
+        streamed += update.text
+        onDelta(update.text)
+      }
+    },
+  })
+  console.log(`cursor role=${roleName} agent=${agent.agentId} run=${run.id}`)
+  const result = await run.wait()
+  if (result.status === "error") {
+    throw new Error(result.error?.message ?? `Cursor run ${run.id} failed`)
+  }
+  if (result.status === "cancelled") {
+    throw new Error(`Cursor run ${run.id} was cancelled`)
+  }
+  const output = (result.result ?? streamed).trim()
+  if (!output) throw new Error(`Cursor run ${run.id} returned an empty reply`)
+  return { output, agentId: agent.agentId }
+}
+
+/** Code snapshot folders the agent may read with its read/grep/glob tools. */
+export function codeDirs(sources: SourceDoc[]): string[] {
+  return sources.flatMap((source) => (source.localPath ? [source.localPath] : []))
+}
+
+function runtimeOptions(workdir: string, tools?: RuntimeTools, dirs: string[] = []) {
   if (process.env.CURSOR_RUNTIME === "cloud") {
     const url = process.env.CURSOR_REPO?.trim()
     return {
@@ -143,9 +239,13 @@ function runtimeOptions(workdir: string) {
     }
   }
   return {
+    // Agents reach outside systems only through write tools that ask the person first.
+    disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] as ToolName[],
     local: {
       cwd: workdir,
+      ...(dirs.length ? { dirs } : {}),
       settingSources: [] as ("project" | "user" | "team" | "mdm" | "plugins" | "all")[],
+      ...(tools ? { customTools: cursorCustomTools(tools) } : {}),
     },
   }
 }

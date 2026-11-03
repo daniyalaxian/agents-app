@@ -22,6 +22,8 @@ export type SourceDoc = {
   title: string
   url: string
   body: string
+  /** Folder on this machine the agent may read (a code snapshot). */
+  localPath?: string
 }
 
 export type MemoryKind =
@@ -63,6 +65,8 @@ export type ChatMessage = {
   at: string
   packet?: PacketView
   agentId?: string
+  /** Agent name (or "human") of the author, used by group chat routing. */
+  speaker?: string
 }
 
 export type GitRepoRef = {
@@ -90,7 +94,11 @@ export type PermissionRequest = {
   resolvedAt: string | null
   error: string | null
   /** Where the write plan was proposed. */
-  surface?: "room" | "dm"
+  surface?: "room" | "dm" | "group"
+  /** "runtime" = asked mid-run by an agent tool call; "plan" = parsed from a Write plan table. */
+  mode?: "runtime" | "plan"
+  /** Structured tool arguments for runtime asks (preferred over parsing payloadSummary). */
+  params?: Record<string, string>
 }
 
 export type EnvDeployRecord = {

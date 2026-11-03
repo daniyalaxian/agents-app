@@ -39,7 +39,10 @@ export function authorizeUrl(config: AtlassianConfig, state: string): string {
   const url = new URL("https://auth.atlassian.com/authorize")
   url.searchParams.set("audience", "api.atlassian.com")
   url.searchParams.set("client_id", config.clientId)
-  url.searchParams.set("scope", SCOPES)
+  // Atlassian refuses consent when a requested scope is not enabled on the app, so optional scopes
+  // (comment reading, Jira Software sprints) come from .env once they are added in the console.
+  const extra = (process.env.ATLASSIAN_EXTRA_SCOPES ?? "").split(/[\s,]+/).filter(Boolean)
+  url.searchParams.set("scope", [...new Set([...SCOPES.split(" "), ...extra])].join(" "))
   url.searchParams.set("redirect_uri", config.redirectUri)
   url.searchParams.set("state", state)
   url.searchParams.set("response_type", "code")
@@ -122,6 +125,46 @@ export async function addConfluenceFooterComment(
     throw new Error(body.message || `Confluence comment failed (${response.status})`)
   }
   return { id: String(body.id) }
+}
+
+/** Footer comments on a Confluence page, newest last, as plain text. Needs the read:comment:confluence scope. */
+export async function listConfluenceFooterComments(credential: AtlassianCredential, pageUrl: string): Promise<string> {
+  const pageId = pageIdFromUrl(pageUrl)
+  if (!pageId) throw new Error("Confluence page URL is missing a page id")
+  const sites = await listSites(credential.accessToken)
+  const cloudId = cloudIdForPageUrl(pageUrl, sites) ?? credential.cloudId
+  const response = await fetch(
+    `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/api/v2/pages/${pageId}/footer-comments?body-format=storage&limit=100`,
+    { headers: { Authorization: `Bearer ${credential.accessToken}`, Accept: "application/json" } },
+  )
+  const body = (await response.json().catch(() => ({}))) as {
+    results?: { id: string; version?: { createdAt?: string }; body?: { storage?: { value?: string } } }[]
+    message?: string
+  }
+  if (!response.ok) {
+    const detail = body.message || `Reading Confluence comments failed (${response.status})`
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `${detail}. The Atlassian app needs the granular scope read:comment:confluence: add it in the developer console, then Disconnect and Connect Atlassian.`,
+      )
+    }
+    throw new Error(detail)
+  }
+  const comments = body.results ?? []
+  if (!comments.length) return "No footer comments on this page."
+  return comments
+    .map((comment) => {
+      const text = (comment.body?.storage?.value ?? "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, "&")
+        .trim()
+      return `- Comment ${comment.id}${comment.version?.createdAt ? ` (${comment.version.createdAt})` : ""}:\n  ${text.replace(/\n/g, "\n  ")}`
+    })
+    .join("\n")
 }
 
 function escapeXml(value: string): string {

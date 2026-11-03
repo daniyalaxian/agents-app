@@ -13,6 +13,26 @@ export type FigmaConfig = {
   redirectUri: string
 }
 
+/** How a Figma API call authenticates: the person's OAuth login or a personal access token. */
+export type FigmaAuth = {
+  headers: Record<string, string>
+  /** Who the call runs as, for error messages. */
+  who: string
+}
+
+export function oauthAuth(credential: FigmaCredential): FigmaAuth {
+  return {
+    headers: { Authorization: `Bearer ${credential.accessToken}` },
+    who: credential.userEmail || credential.userName,
+  }
+}
+
+/** FIGMA_ACCESS_TOKEN (personal access token) is used instead of OAuth when it is set. */
+export function tokenAuth(): FigmaAuth | null {
+  const token = process.env.FIGMA_ACCESS_TOKEN?.trim()
+  return token ? { headers: { "X-Figma-Token": token }, who: "the personal access token in FIGMA_ACCESS_TOKEN" } : null
+}
+
 // Read + comment write (comments only executed after human Approve).
 const SCOPES = [
   "current_user:read",
@@ -115,33 +135,44 @@ type FigmaFileResponse = {
   message?: string
 }
 
-/** Load a compact text summary of pages/frames for agent packets (not the full file JSON). */
-export async function fetchFigmaFileSummary(
-  credential: FigmaCredential,
-  fileUrl: string,
-): Promise<{ title: string; url: string; body: string }> {
-  const fileKey = fileKeyFromUrl(fileUrl)
-  if (!fileKey) {
-    throw new Error("Invalid Figma file URL")
-  }
-  const nodeId = nodeIdFromUrl(fileUrl)
-  const endpoint = new URL(`https://api.figma.com/v1/files/${fileKey}`)
-  endpoint.searchParams.set("depth", "2")
-  if (nodeId) endpoint.searchParams.set("ids", nodeId)
-
-  const response = await fetch(endpoint, {
-    headers: { Authorization: `Bearer ${credential.accessToken}` },
-  })
-  const body = (await response.json().catch(() => ({}))) as FigmaFileResponse
+/** GET a Figma REST path and return JSON, with a readable error for denied access. */
+async function figmaGet<T>(auth: FigmaAuth, path: string): Promise<T> {
+  const response = await fetch(`https://api.figma.com${path}`, { headers: auth.headers })
+  const body = (await response.json().catch(() => ({}))) as T & { message?: string; err?: string }
   if (!response.ok) {
-    const detail = body.message || body.err || `Figma file read failed (${response.status})`
+    const detail = body.message || body.err || `Figma request failed (${response.status})`
     if (response.status === 403) {
       throw new Error(
-        `${detail}. Enable file_metadata:read and file_content:read on the Figma OAuth app, then Disconnect and Connect Figma again.`,
+        `${detail}: ${auth.who} cannot open this file through the Figma API. ` +
+          "Check that this account can open the file in Figma and that your Figma organization allows API access.",
       )
     }
     throw new Error(detail)
   }
+  return body
+}
+
+function requireFileKey(fileUrl: string): string {
+  const fileKey = fileKeyFromUrl(fileUrl)
+  if (!fileKey) throw new Error("Invalid Figma file URL")
+  return fileKey
+}
+
+/** Accepts "13397:1590" or the URL form "13397-1590". */
+export function normalizeNodeId(nodeId: string): string {
+  return nodeId.trim().replace(/-/g, ":")
+}
+
+/** Load a compact text summary of pages/frames for agent packets (not the full file JSON). */
+export async function fetchFigmaFileSummary(
+  auth: FigmaAuth,
+  fileUrl: string,
+): Promise<{ title: string; url: string; body: string }> {
+  const fileKey = requireFileKey(fileUrl)
+  const nodeId = nodeIdFromUrl(fileUrl)
+  const query = new URLSearchParams({ depth: "2" })
+  if (nodeId) query.set("ids", nodeId)
+  const body = await figmaGet<FigmaFileResponse>(auth, `/v1/files/${fileKey}?${query}`)
 
   const title = body.name || `Figma ${fileKey}`
   const lines = [
@@ -175,13 +206,100 @@ function summarizeNodes(nodes: FigmaNode[], depth: number): string[] {
   return lines
 }
 
+/** Agent read tool: pages and their top-level frames, with ids to pass to the other tools. */
+export async function listFigmaFrames(auth: FigmaAuth, fileUrl: string, page?: string): Promise<string> {
+  const fileKey = requireFileKey(fileUrl)
+  const body = await figmaGet<FigmaFileResponse>(auth, `/v1/files/${fileKey}?depth=2`)
+  const wanted = page?.trim().toLowerCase()
+  const pages = (body.document?.children ?? []).filter(
+    (item) => !wanted || item.name?.toLowerCase().includes(wanted) || item.id === page,
+  )
+  if (!pages.length) return wanted ? `No page matching "${page}".` : "The file has no pages."
+  const lines = [`Figma file: ${body.name ?? fileKey}`]
+  for (const item of pages) {
+    lines.push(`\n## Page: ${item.name} (${item.id})`)
+    const frames = item.children ?? []
+    if (!frames.length) lines.push("- (empty page)")
+    for (const frame of frames.slice(0, 150)) lines.push(`- [${frame.type}] ${frame.name} (${frame.id})`)
+    if (frames.length > 150) lines.push(`- … ${frames.length - 150} more`)
+  }
+  return lines.join("\n")
+}
+
+type FigmaDetailNode = FigmaNode & {
+  characters?: string
+  absoluteBoundingBox?: { width: number; height: number }
+}
+
+/** Agent read tool: one frame's layer outline and all of its visible text. */
+export async function readFigmaFrame(auth: FigmaAuth, fileUrl: string, nodeId: string): Promise<string> {
+  const fileKey = requireFileKey(fileUrl)
+  const id = normalizeNodeId(nodeId)
+  const body = await figmaGet<{ nodes?: Record<string, { document?: FigmaDetailNode } | null> }>(
+    auth,
+    `/v1/files/${fileKey}/nodes?ids=${encodeURIComponent(id)}`,
+  )
+  const root = body.nodes?.[id]?.document
+  if (!root) return `No node ${id} in this file. Use figma_list_frames to find frame ids.`
+
+  const outline: string[] = []
+  const texts: string[] = []
+  const walk = (node: FigmaDetailNode, depth: number) => {
+    if (depth <= 3 && outline.length < 120) {
+      const size = node.absoluteBoundingBox
+        ? ` ${Math.round(node.absoluteBoundingBox.width)}×${Math.round(node.absoluteBoundingBox.height)}`
+        : ""
+      outline.push(`${"  ".repeat(depth)}- [${node.type}] ${node.name}${size}`)
+    }
+    if (node.type === "TEXT" && node.characters?.trim() && texts.length < 400) {
+      texts.push(`- ${node.characters.trim().replace(/\s+/g, " ")}`)
+    }
+    for (const child of (node.children ?? []) as FigmaDetailNode[]) walk(child, depth + 1)
+  }
+  walk(root, 0)
+  return [
+    `Frame: ${root.name} (${id})`,
+    "",
+    "## Layers",
+    ...outline,
+    "",
+    "## Text on this frame",
+    ...(texts.length ? texts : ["(no text layers)"]),
+  ]
+    .join("\n")
+    .slice(0, 20000)
+}
+
+/** Agent read tool: a PNG render of one frame, so the agent can see the screen. */
+export async function renderFigmaFrame(
+  auth: FigmaAuth,
+  fileUrl: string,
+  nodeId: string,
+): Promise<{ data: string; mimeType: string; scale: number }> {
+  const fileKey = requireFileKey(fileUrl)
+  const id = normalizeNodeId(nodeId)
+  const maxBytes = 3_500_000
+  for (const scale of [1, 0.5, 0.25]) {
+    const body = await figmaGet<{ images?: Record<string, string | null>; err?: string | null }>(
+      auth,
+      `/v1/images/${fileKey}?ids=${encodeURIComponent(id)}&format=png&scale=${scale}`,
+    )
+    const imageUrl = body.images?.[id]
+    if (!imageUrl) throw new Error(`Figma could not render node ${id}. Use figma_list_frames to find frame ids.`)
+    const image = await fetch(imageUrl)
+    if (!image.ok) throw new Error(`Downloading the render failed (${image.status})`)
+    const bytes = Buffer.from(await image.arrayBuffer())
+    if (bytes.length <= maxBytes) return { data: bytes.toString("base64"), mimeType: "image/png", scale }
+  }
+  throw new Error(`Frame ${id} is too large to render. Read it with figma_read_frame, or pick a smaller frame.`)
+}
+
 export async function addFigmaComment(
-  credential: FigmaCredential,
+  auth: FigmaAuth,
   fileUrl: string,
   message: string,
 ): Promise<{ id: string }> {
-  const fileKey = fileKeyFromUrl(fileUrl)
-  if (!fileKey) throw new Error("Invalid Figma file URL")
+  const fileKey = requireFileKey(fileUrl)
   const nodeId = nodeIdFromUrl(fileUrl)
   const payload: Record<string, unknown> = { message }
   if (nodeId) {
@@ -190,7 +308,7 @@ export async function addFigmaComment(
   const response = await fetch(`https://api.figma.com/v1/files/${fileKey}/comments`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${credential.accessToken}`,
+      ...auth.headers,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),

@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import type { AtlassianCredential } from "./credentials.js"
 
 export type ParsedJiraBoard = {
@@ -82,7 +83,7 @@ export async function createJiraIssue(
   input: {
     projectKey: string
     summary: string
-    issueType: "Epic" | "Story" | "Subtask" | "Task"
+    issueType: "Epic" | "Story" | "Subtask" | "Task" | "Bug"
     description?: string
     parentKey?: string
   },
@@ -143,6 +144,135 @@ export function summaryFromPayload(payloadSummary: string, action: string): stri
   const cleaned = payloadSummary.replace(/\s+/g, " ").trim()
   if (cleaned && cleaned.toLowerCase() !== "n/a") return cleaned.slice(0, 255)
   return action.slice(0, 255)
+}
+
+/** Upload a file as an attachment on an issue (multipart; Jira requires the no-check header). */
+export async function attachJiraFile(credential: AtlassianCredential, issueKey: string, filePath: string): Promise<string> {
+  const form = new FormData()
+  const name = filePath.split(/[\\/]/).pop() || "attachment.png"
+  form.append("file", new Blob([fs.readFileSync(filePath)], { type: "image/png" }), name)
+  const response = await fetch(
+    `https://api.atlassian.com/ex/jira/${credential.cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}/attachments`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${credential.accessToken}`, Accept: "application/json", "X-Atlassian-Token": "no-check" },
+      body: form,
+    },
+  )
+  const body = (await response.json().catch(() => [])) as { id?: string }[] & { errorMessages?: string[] }
+  if (!response.ok || !Array.isArray(body) || !body[0]?.id) {
+    throw new Error((body as { errorMessages?: string[] }).errorMessages?.join("; ") || `Jira attachment failed (${response.status})`)
+  }
+  return String(body[0].id)
+}
+
+export type JiraSprint = { id: number; name: string; state: string; startDate?: string; endDate?: string }
+
+/** Active and future sprints on a Jira Software board (Agile API). */
+export async function listSprints(credential: AtlassianCredential, boardId: string): Promise<JiraSprint[]> {
+  const sprints: JiraSprint[] = []
+  for (let startAt = 0; startAt < 500; startAt += 50) {
+    const response = await fetch(
+      `https://api.atlassian.com/ex/jira/${credential.cloudId}/rest/agile/1.0/board/${encodeURIComponent(boardId)}/sprint?state=active,future&startAt=${startAt}&maxResults=50`,
+      { headers: { Authorization: `Bearer ${credential.accessToken}`, Accept: "application/json" } },
+    )
+    const body = (await response.json().catch(() => ({}))) as {
+      values?: JiraSprint[]
+      isLast?: boolean
+      errorMessages?: string[]
+      message?: string
+    }
+    if (!response.ok) throw new Error(agileError(response.status, body.errorMessages?.join("; ") || body.message))
+    sprints.push(...(body.values ?? []))
+    if (body.isLast !== false) break
+  }
+  return sprints
+}
+
+/** Find a sprint by id or by (part of) its name, e.g. "Sprint 6". */
+export function findSprint(sprints: JiraSprint[], wanted: string): JiraSprint | null {
+  const text = wanted.trim().toLowerCase()
+  const byId = sprints.find((sprint) => String(sprint.id) === text)
+  if (byId) return byId
+  const exact = sprints.find((sprint) => sprint.name.toLowerCase() === text)
+  if (exact) return exact
+  const partial = sprints.filter((sprint) => sprint.name.toLowerCase().includes(text))
+  return partial.length === 1 ? partial[0] : null
+}
+
+/** Move issues into a sprint (they leave their current sprint or the backlog). */
+export async function moveIssuesToSprint(
+  credential: AtlassianCredential,
+  sprintId: number,
+  issueKeys: string[],
+): Promise<void> {
+  const response = await fetch(
+    `https://api.atlassian.com/ex/jira/${credential.cloudId}/rest/agile/1.0/sprint/${sprintId}/issue`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ issues: issueKeys }),
+    },
+  )
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { errorMessages?: string[]; message?: string }
+    throw new Error(agileError(response.status, body.errorMessages?.join("; ") || body.message))
+  }
+}
+
+function agileError(status: number, detail?: string): string {
+  if (status === 401 || status === 403) {
+    return (
+      `${detail || `Jira Software request failed (${status})`}. The Atlassian app needs the Jira Software scopes ` +
+      "read:board-scope:jira-software, read:sprint:jira-software and write:sprint:jira-software: add them in the developer console, then Disconnect and Connect Atlassian."
+    )
+  }
+  return detail || `Jira Software request failed (${status})`
+}
+
+/** Replace an issue's summary and/or description. Other fields (sprint, status) are not touched. */
+export async function updateJiraIssue(
+  credential: AtlassianCredential,
+  issueKey: string,
+  changes: { summary?: string; description?: string },
+): Promise<void> {
+  const fields: Record<string, unknown> = {}
+  if (changes.summary?.trim()) fields.summary = changes.summary.trim().slice(0, 255)
+  if (changes.description?.trim()) {
+    fields.description = {
+      type: "doc",
+      version: 1,
+      content: changes.description
+        .trim()
+        .split(/\n{2,}/)
+        .map((paragraph) => ({ type: "paragraph", content: [{ type: "text", text: paragraph }] })),
+    }
+  }
+  if (!Object.keys(fields).length) throw new Error("Nothing to update: give a summary or a description")
+  const response = await fetch(
+    `https://api.atlassian.com/ex/jira/${credential.cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${credential.accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ fields }),
+    },
+  )
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { errorMessages?: string[]; errors?: Record<string, string> }
+    throw new Error(
+      body.errorMessages?.join("; ") ||
+        (body.errors ? Object.values(body.errors).join("; ") : "") ||
+        `Jira update failed (${response.status})`,
+    )
+  }
 }
 
 export async function addJiraComment(

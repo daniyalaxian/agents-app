@@ -77,7 +77,7 @@ export function indexAgentOutput(input: {
   agentName: string
   agentTitle: string
   output: string
-  surface: "room" | "dm"
+  surface: "room" | "dm" | "group"
 }): MemoryEntry[] {
   const source = `${input.surface}:${input.agentName}`
   const created: MemoryEntry[] = []
@@ -166,7 +166,7 @@ export function indexPermissionResult(input: {
   target: string
   status: "executed" | "denied" | "failed"
   detail: string
-  surface: "room" | "dm"
+  surface: "room" | "dm" | "group"
 }): MemoryEntry {
   return addMemory(input.root, input.roomId, {
     kind: "approval",

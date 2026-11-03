@@ -1,10 +1,11 @@
 # Project
 
-- Name: Orders
-- Jira project key: ORD
-- Confluence space: ORD (BRS lives here)
-- Figma file: set per sprint in Setup
-- Repositories: set per sprint in Setup (microservices list)
+- Name: Tigo SME Business Suite: Growing Together (Tanzania)
+- Market: Tanzania (Tigo). Use Tanzania reference data (regions, phone rules) from the BRS.
+- Jira project key: SMETZ (board 4887)
+- Confluence space: SIB (BRS lives here: "BRS_Growing_Together", version to be confirmed)
+- Figma file: "SME Business suite (Charté YAS)". Tanzania designs are under TANZANIA → Growing Together (node 13321:27679). TOGO and SENEGAL pages are other markets.
+- Repositories: set per sprint in Setup (currently `AxianGroupSF/TZ-Tigo-SME-Web`, the web UI)
 - Pipeline design: see `project/SDLC-DESIGN.md`
 - Full roadmap: see `project/BUILD-ROADMAP.md`
 
@@ -17,7 +18,7 @@
 
 ## Jenkins (fill per project)
 
-- Deploy job name: `order-status-deploy`
+- Deploy job name: not set yet (ask the person; do not assume one)
 - Smoke callback path: `/api/jenkins/smoke` (Phase 5)
 - Smoke auth: `JENKINS_SMOKE_TOKEN` in server `.env`
 

@@ -35,6 +35,7 @@ import {
   authorizeUrl,
   exchangeCode,
   fetchConfluencePage,
+  listConfluenceFooterComments,
   pageIdFromUrl,
   refreshed,
 } from "./atlassian.js"
@@ -44,6 +45,12 @@ import {
   exchangeCode as figmaExchangeCode,
   fetchFigmaFileSummary,
   figmaConfig,
+  listFigmaFrames,
+  oauthAuth,
+  readFigmaFrame,
+  renderFigmaFrame,
+  tokenAuth,
+  type FigmaAuth,
   fileKeyFromUrl,
   refreshed as refreshedFigma,
 } from "./figma.js"
@@ -62,6 +69,11 @@ import {
   issueKeyFromTarget,
   parseJiraBoardUrl,
   summaryFromPayload,
+  updateJiraIssue,
+  attachJiraFile,
+  findSprint,
+  listSprints,
+  moveIssuesToSprint,
 } from "./jira.js"
 import { buildHealthReport } from "./devops.js"
 import { jenkinsConfig, smokeToken, triggerJenkinsJob } from "./jenkins.js"
@@ -79,13 +91,14 @@ import {
   softResetRoom,
   type RunHooks,
 } from "./router.js"
-import { engineName, selectRunner } from "./runner.js"
+import { engineName, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
 import { ensureSession } from "./session.js"
 import { readRoom, writeRoom } from "./store.js"
 import { slugifyRequirement, parseWritePlans } from "./permissions.js"
 import {
   addMemory,
   formatMemoryForPacket,
+  indexAgentOutput,
   indexPermissionResult,
   isMemoryKind,
   memoryEntriesForRoom,
@@ -93,7 +106,22 @@ import {
 } from "./memory.js"
 import { listDmAgents, readDm, writeDm } from "./dm.js"
 import { buildPrFiles, extractJiraKeys, writeLocalMirror } from "./workdir.js"
-import type { PermissionRequest, Room, SourceDoc } from "./types.js"
+import { annotatePng } from "./annotate.js"
+import { findLocalRepo, localRepos, snapshotRepo } from "./code.js"
+import { PermissionGate } from "./gate.js"
+import {
+  addHumanMessage,
+  groupContext,
+  handoffStages,
+  newGroup,
+  readGroup,
+  runGroup,
+  writeGroup,
+  type GroupThread,
+} from "./group.js"
+import type { ReadToolName, RuntimeTools, ToolRequest } from "./tools.js"
+import type { SDKCustomToolResult } from "@cursor/sdk"
+import type { AgentFile, PermissionRequest, Room, SourceDoc } from "./types.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 loadEnv(root)
@@ -103,7 +131,10 @@ const baseUrl = (process.env.APP_BASE_URL ?? `http://localhost:${port}`).replace
 const workdir = path.join(root, "data", "workdir")
 const secrets = loadSecrets(root)
 const credentials = new CredentialStore(root, secrets.credentialsKey)
+const gate = new PermissionGate()
 let busy = false
+/** The group thread a run is working on, so messages sent mid-run join it. */
+let liveGroup: { thread: GroupThread; agents: AgentFile[]; pause: boolean } | null = null
 
 const app = express()
 app.use(express.json())
@@ -561,8 +592,30 @@ app.post("/api/room/requirement", (req, res) => {
   res.json(present(room))
 })
 
+/** Annotated screens made by design_annotate (file names only, no paths). */
+app.get("/api/annotations/:file", (req, res) => {
+  const file = path.basename(String(req.params.file))
+  const full = path.join(annotationsDir, file)
+  if (!/\.png$/i.test(file) || !fs.existsSync(full)) {
+    res.status(404).end()
+    return
+  }
+  res.sendFile(full)
+})
+
+/** Runtime asks an agent is blocked on right now (room run or DM). */
+app.get("/api/permissions/live", (req, res) => {
+  ensureSession(req, res, secrets.sessionSecret)
+  res.json({ pending: gate.pending() })
+})
+
 app.post("/api/room/permissions/:id/approve", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  // A live ask: wake the blocked tool call. The run itself makes the write.
+  if (gate.answer(req.params.id, { approved: true, remember: req.body?.remember === true, reason: null })) {
+    res.json({ ok: true, live: true })
+    return
+  }
   const room = current()
   const permission = room.permissions?.find((item) => item.id === req.params.id)
   if (!permission) {
@@ -620,6 +673,11 @@ app.post("/api/room/permissions/:id/approve", async (req, res) => {
 
 app.post("/api/room/permissions/:id/deny", (req, res) => {
   ensureSession(req, res, secrets.sessionSecret)
+  const reason = typeof req.body?.reason === "string" && req.body.reason.trim() ? req.body.reason.trim() : null
+  if (gate.answer(req.params.id, { approved: false, remember: false, reason })) {
+    res.json({ ok: true, live: true })
+    return
+  }
   const room = current()
   const permission = room.permissions?.find((item) => item.id === req.params.id)
   if (!permission) {
@@ -734,16 +792,16 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
   }
 
   busy = true
+  const runId = crypto.randomUUID()
+  const thread = readDm(root, room.id, agentName)
+  thread.messages.push({
+    id: crypto.randomUUID(),
+    kind: "human",
+    title: "You",
+    body,
+    at: new Date().toISOString(),
+  })
   try {
-    const thread = readDm(root, room.id, agentName)
-    thread.messages.push({
-      id: crypto.randomUUID(),
-      kind: "human",
-      title: "You",
-      body,
-      at: new Date().toISOString(),
-    })
-
     const sources = await loadSourcesForRole(sessionId, room, agent.name)
     const dmHistory = thread.messages
       .slice(-20)
@@ -761,7 +819,15 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
     }
 
     const runner = selectRunner(workdir)
-    const result = await runner(packet, () => undefined)
+    const tools = runtimeTools({
+      sessionId,
+      room,
+      agent,
+      runId,
+      surface: "dm",
+      onChange: () => writeRoom(root, room),
+    })
+    const result = await runner(packet, () => undefined, tools)
     const output = appendDmAck(result.output, body)
 
     const { indexAgentOutput } = await import("./memory.js")
@@ -801,10 +867,90 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "DM failed"
-    res.status(502).json({ error: message })
+    // Keep the person's message and show the failure in the thread, so nothing is lost.
+    thread.messages.push({
+      id: crypto.randomUUID(),
+      kind: "agent",
+      title: agent.title,
+      body: `I could not reply: ${message}`,
+      at: new Date().toISOString(),
+    })
+    writeDm(root, thread)
+    res.status(502).json({ error: message, thread })
   } finally {
+    gate.endRun(runId)
     busy = false
   }
+})
+
+app.get("/api/group", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  const room = current()
+  const thread = liveGroup?.thread ?? readGroup(root, room.id)
+  res.json(presentGroup(thread, groupAgents(thread, sessionId)))
+})
+
+/** Send a message. Mid-run it joins the live thread; otherwise it starts a run (NDJSON stream). */
+app.post("/api/group/message", async (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  const body = typeof req.body?.body === "string" ? req.body.body.trim() : ""
+  if (liveGroup) {
+    if (!body) {
+      res.status(409).json({ error: "The group is already talking" })
+      return
+    }
+    addHumanMessage(liveGroup.thread, body, liveGroup.agents)
+    writeGroup(root, liveGroup.thread)
+    res.json({ queued: true, ...presentGroup(liveGroup.thread, liveGroup.agents) })
+    return
+  }
+  if (busy) {
+    res.status(409).json({ error: "A role is already running" })
+    return
+  }
+  const room = current()
+  const thread = readGroup(root, room.id)
+  const agents = groupAgents(thread, sessionId)
+  if (body) addHumanMessage(thread, body, agents)
+  await streamGroup(res, sessionId, room, thread, agents)
+})
+
+/** Finish kickoff: its members' stages are done; the pipeline continues at the next role. */
+app.post("/api/group/handoff", async (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (liveGroup || busy) {
+    res.status(409).json({ error: "Wait until the group has stopped talking" })
+    return
+  }
+  const room = current()
+  const thread = readGroup(root, room.id)
+  if (!thread.messages.some((message) => message.kind === "agent")) {
+    res.status(409).json({ error: "Run the kickoff discussion first" })
+    return
+  }
+  const handed = handoffStages(room, thread)
+  writeRoom(root, handed)
+  const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+  await streamRun(res, sessionId, (hooks) =>
+    runUntilWait(handed, roomAgents(handed, workspaceId), projectMarkdown(), selectRunner(workdir), hooks),
+  )
+})
+
+app.post("/api/group/pause", (req, res) => {
+  ensureSession(req, res, secrets.sessionSecret)
+  if (liveGroup) liveGroup.pause = true
+  res.json({ ok: true })
+})
+
+app.post("/api/group/reset", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (liveGroup) {
+    res.status(409).json({ error: "Pause the group before starting over" })
+    return
+  }
+  const thread = newGroup(current().id)
+  writeGroup(root, thread)
+  res.json(presentGroup(thread, groupAgents(thread, sessionId)))
 })
 
 app.post("/api/room/source", async (req, res) => {
@@ -1161,6 +1307,7 @@ async function streamRun(
     return
   }
   busy = true
+  const runId = crypto.randomUUID()
   res.status(200)
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
   res.setHeader("Cache-Control", "no-cache, no-transform")
@@ -1179,6 +1326,18 @@ async function streamRun(
       emit({ type: "delta", name: roleName, title, text })
     },
     loadSources: (room, roleName) => loadSourcesForRole(sessionId, room, roleName),
+    toolsFor: (room, agent) =>
+      runtimeTools({
+        sessionId,
+        room,
+        agent,
+        runId,
+        surface: "room",
+        onChange: () => {
+          writeRoom(root, room)
+          emit({ type: "room", room: present(room) })
+        },
+      }),
   }
   try {
     const room = await work(hooks)
@@ -1188,16 +1347,117 @@ async function streamRun(
     const message = error instanceof Error ? error.message : "The run failed"
     emit({ type: "error", message })
   } finally {
+    gate.endRun(runId)
     busy = false
     res.end()
   }
 }
 
-async function loadSourcesForRole(sessionId: string, room: Room, roleName: string): Promise<SourceDoc[]> {
+function groupAgents(thread: GroupThread, sessionId: string): AgentFile[] {
+  const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+  return thread.members.map((name) => {
+    const agent = findCatalogAgent(root, workspaceId, name)
+    if (!agent) throw new Error(`Group member ${name} is not in the agent catalog`)
+    return agent
+  })
+}
+
+function presentGroup(thread: GroupThread, agents: AgentFile[]) {
+  return {
+    thread,
+    members: agents.map((agent) => ({ name: agent.name, title: agent.title })),
+    running: Boolean(liveGroup),
+    engine: engineName(),
+  }
+}
+
+async function streamGroup(
+  res: express.Response,
+  sessionId: string,
+  room: Room,
+  thread: GroupThread,
+  agents: AgentFile[],
+) {
+  busy = true
+  liveGroup = { thread, agents, pause: false }
+  const live = liveGroup
+  const runId = crypto.randomUUID()
+  res.status(200)
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
+  res.setHeader("Cache-Control", "no-cache, no-transform")
+  res.flushHeaders()
+  const emit = (event: unknown) => {
+    res.write(`${JSON.stringify(event)}\n`)
+  }
+  const sync = () => {
+    writeGroup(root, thread)
+    emit({ type: "group", ...presentGroup(thread, agents) })
+  }
+  let sharedSources: Promise<SourceDoc[]> | null = null
+  try {
+    await runGroup(thread, {
+      agents,
+      runner: selectTurnRunner(workdir),
+      requirement: room.requirement,
+      maxTurns: Number(process.env.GROUP_MAX_TURNS) || 12,
+      withTools: supportsRuntimeTools(),
+      // Members share the same sources, so load them once per run.
+      sourcesFor: (agent) => (sharedSources ??= loadSourcesForRole(sessionId, room, agent.name, true)),
+      contextFor: async (agent, sources) =>
+        groupContext({
+          agent,
+          projectMarkdown: projectMarkdown(),
+          requirement: room.requirement,
+          memory: formatMemoryForPacket(memoryEntriesForRoom(root, room)),
+          sources,
+          notes: room.notes,
+        }),
+      toolsFor: (agent) =>
+        runtimeTools({
+          sessionId,
+          room,
+          agent,
+          runId,
+          surface: "group",
+          onChange: () => writeRoom(root, room),
+        }),
+      onThread: sync,
+      onDelta: (agent, text) => emit({ type: "delta", name: agent.name, title: agent.title, text }),
+      onMessage: (agent, message) => {
+        indexAgentOutput({
+          root,
+          roomId: room.id,
+          agentName: agent.name,
+          agentTitle: agent.title,
+          output: message.body,
+          surface: "group",
+        })
+      },
+      shouldPause: () => live.pause,
+    })
+  } catch (error) {
+    emit({ type: "error", message: error instanceof Error ? error.message : "The group run failed" })
+  } finally {
+    gate.endRun(runId)
+    liveGroup = null
+    busy = false
+    sync()
+    res.end()
+  }
+}
+
+/** `shared`: group chat members all read the BRS, Figma and repos together. */
+async function loadSourcesForRole(
+  sessionId: string,
+  room: Room,
+  roleName: string,
+  shared = false,
+): Promise<SourceDoc[]> {
   const sources: SourceDoc[] = []
-  const needsBrd = roleName === "sa" || roleName === "software-lead"
-  const needsFigma = roleName === "sa" || roleName === "software-lead"
+  const needsBrd = shared || roleName === "sa" || roleName === "software-lead"
+  const needsFigma = shared || roleName === "sa" || roleName === "software-lead"
   const needsGit =
+    shared ||
     roleName === "sa" ||
     roleName === "software-lead" ||
     roleName === "architecture" ||
@@ -1212,41 +1472,51 @@ async function loadSourcesForRole(sessionId: string, room: Room, roleName: strin
     })
   }
 
+  // One unreadable source (e.g. Figma rate limit) must not stop a chat or a role: the agent gets a note instead.
+  const load = async (kind: SourceDoc["kind"], name: string, url: string, read: () => Promise<SourceDoc>) => {
+    try {
+      sources.push(await read())
+    } catch (error) {
+      sources.push({
+        kind,
+        title: `${name} (could not be loaded)`,
+        url,
+        body: `The app could not read this source: ${error instanceof Error ? error.message : "unknown error"}. Do not guess its contents. Tell the person, and work from the other sources.`,
+      })
+    }
+  }
+
   if (needsBrd && room.confluencePageUrl) {
-    const config = atlassianConfig(baseUrl)
-    if (!config) {
-      throw new Error("Atlassian OAuth is not configured on the server")
-    }
-    const saved = credentials.getAtlassian(sessionId)
-    if (!saved) {
-      throw new Error("Connect Atlassian before this role can read Confluence")
-    }
-    const fresh = await refreshed(config, saved)
-    credentials.setAtlassian(sessionId, fresh)
-    sources.push(await fetchConfluencePage(fresh, room.confluencePageUrl))
+    const pageUrl = room.confluencePageUrl
+    await load("confluence", "Confluence BRS", pageUrl, async () => {
+      const config = atlassianConfig(baseUrl)
+      if (!config) {
+        throw new Error("Atlassian OAuth is not configured on the server")
+      }
+      const saved = credentials.getAtlassian(sessionId)
+      if (!saved) {
+        throw new Error("Connect Atlassian before this role can read Confluence")
+      }
+      const fresh = await refreshed(config, saved)
+      credentials.setAtlassian(sessionId, fresh)
+      return fetchConfluencePage(fresh, pageUrl)
+    })
+  }
+
+  if (needsFigma && process.env.DESIGNS_DIR?.trim()) {
+    sources.push(designsSource(process.env.DESIGNS_DIR.trim()))
   }
 
   if (needsFigma && room.figmaFileUrl) {
-    const config = figmaConfig(baseUrl)
-    if (!config) {
-      throw new Error("Figma OAuth is not configured on the server")
-    }
-    const saved = credentials.getFigma(sessionId)
-    if (!saved) {
-      throw new Error("Connect Figma before this role can read the sprint Figma file")
-    }
-    const fresh = await refreshedFigma(config, saved)
-    credentials.setFigma(sessionId, fresh)
-    const summary = await fetchFigmaFileSummary(fresh, room.figmaFileUrl)
-    sources.push({
-      kind: "figma",
-      title: summary.title,
-      url: summary.url,
-      body: summary.body,
+    const fileUrl = room.figmaFileUrl
+    await load("figma", "Figma file", fileUrl, async () => {
+      const summary = await cachedFigmaSummary(sessionId, fileUrl)
+      return { kind: "figma", title: summary.title, url: summary.url, body: summary.body }
     })
   }
 
   if (needsGit && room.gitRepos?.length) {
+    sources.push(...(await codeSources(room)))
     const lines = room.gitRepos.map(
       (item, index) => `${index + 1}. ${item.owner}/${item.repo} @ ${item.branch}\n   ${item.url}`,
     )
@@ -1366,6 +1636,317 @@ function projectMarkdown(): string {
   return fs.readFileSync(path.join(root, "project", "AGENTS.md"), "utf8")
 }
 
+/**
+ * Write tools for one role run. Each call records a pending permission on the live
+ * room, blocks until the person answers, then makes the write and tells the model.
+ */
+function runtimeTools(input: {
+  sessionId: string
+  room: Room
+  agent: AgentFile
+  runId: string
+  surface: "room" | "dm" | "group"
+  onChange: () => void
+}): RuntimeTools {
+  const { sessionId, room, agent, runId, surface, onChange } = input
+  return {
+    read: (name, args) => readTool(sessionId, room, name, args),
+    request: async (ask: ToolRequest) => {
+      const permission: PermissionRequest = {
+        id: crypto.randomUUID(),
+        roleName: agent.name,
+        roleTitle: agent.title,
+        system: ask.system,
+        action: ask.action,
+        target: ask.target,
+        payloadSummary: ask.payloadSummary,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+        error: null,
+        surface,
+        mode: "runtime",
+        params: ask.params,
+      }
+      room.permissions = [...(room.permissions || []), permission]
+      onChange()
+
+      const decision = await gate.ask(runId, permission)
+      permission.resolvedAt = new Date().toISOString()
+      const record = (status: "executed" | "denied" | "failed", detail: string) =>
+        indexPermissionResult({
+          root,
+          roomId: room.id,
+          agentName: agent.name,
+          system: permission.system,
+          action: permission.action,
+          target: permission.target,
+          status,
+          detail,
+          surface,
+        })
+
+      if (!decision.approved) {
+        permission.status = "denied"
+        permission.error = decision.reason
+        record("denied", decision.reason || "Denied by human")
+        onChange()
+        return `DENIED by the person${decision.reason ? `: ${decision.reason}` : ""}. Do not retry this write.`
+      }
+
+      try {
+        await executePermission(sessionId, room, permission)
+        permission.status = "executed"
+        record("executed", permission.payloadSummary)
+        onChange()
+        const approval = decision.remember && decision.reason ? "allowed earlier in this run by the person" : "approved by the person"
+        // Say who approved: the model cannot see the Allow click and otherwise claims it never asked.
+        return `OK (${approval} at ${permission.resolvedAt?.slice(11, 16)} UTC; you, the ${agent.title}, made this write): ${permission.payloadSummary.split(" → ").pop()}`
+      } catch (error) {
+        permission.status = "failed"
+        permission.error = error instanceof Error ? error.message : "Write failed"
+        record("failed", permission.error)
+        onChange()
+        return `FAILED: ${permission.error}`
+      }
+    },
+  }
+}
+
+/**
+ * Read-only code for agents: each Setup repo found among the local clones in CODE_WORKSPACE is
+ * exported (its Setup branch) into data/workdir/code and handed to the agent as a folder to read.
+ */
+async function codeSources(room: Room): Promise<SourceDoc[]> {
+  const workspace = process.env.CODE_WORKSPACE?.trim()
+  if (!workspace) return []
+  const clones = await localRepos(workspace)
+  return Promise.all(
+    room.gitRepos.map(async (item): Promise<SourceDoc> => {
+      const name = `${item.owner}/${item.repo}`
+      const clone = findLocalRepo(clones, item.owner, item.repo)
+      if (!clone) {
+        return {
+          kind: "github",
+          title: `Code: ${name} (no local clone)`,
+          url: item.url,
+          body: `${name} is not among the local clones in CODE_WORKSPACE, so its code cannot be read. Tell the person.`,
+        }
+      }
+      try {
+        const snap = await snapshotRepo(root, clone, item.branch)
+        return {
+          kind: "github",
+          title: `Code: ${name} @ ${snap.ref} (read-only)`,
+          url: item.url,
+          localPath: snap.dir,
+          body: [
+            `Read-only copy of ${name}, branch ${snap.ref}, commit ${snap.commit.slice(0, 10)} (${snap.committedAt}).`,
+            `Folder: ${snap.dir}`,
+            "Use your read, grep, glob and ls tools on this folder to see what is already implemented. Cite file paths.",
+            "You cannot change these files. Code changes are proposed later, through pull requests.",
+            snap.fetchError ? `Note: git fetch failed (${snap.fetchError}); this is the last fetched state.` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        }
+      } catch (error) {
+        return {
+          kind: "github",
+          title: `Code: ${name} (could not be read)`,
+          url: item.url,
+          body: `The app could not export ${name} @ ${item.branch}: ${error instanceof Error ? error.message : "error"}. Tell the person.`,
+        }
+      }
+    }),
+  )
+}
+
+const annotationsDir = path.join(root, "data", "workdir", "annotations")
+
+/** design_annotate: red boxes on a copy of an exported screen, shown back to the model to check. */
+function annotateTool(args: Record<string, string>): SDKCustomToolResult {
+  const designs = process.env.DESIGNS_DIR?.trim()
+  if (!designs) throw new Error("No Figma exports folder (DESIGNS_DIR) is set")
+  const base = path.resolve(designs)
+  const source = path.resolve(base, args.image)
+  if (!source.startsWith(base + path.sep) || !fs.existsSync(source)) {
+    throw new Error(`No image "${args.image}" in the Figma exports folder. Use a file name from the exports list.`)
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(args.boxes)
+  } catch {
+    throw new Error("boxes must be a list of {x, y, width, height, label} in percent")
+  }
+  const boxes = (Array.isArray(raw) ? raw : []).map((item) => {
+    const box = item as Record<string, unknown>
+    const num = (key: string) => Math.min(100, Math.max(0, Number(box[key])))
+    return { x: num("x"), y: num("y"), width: num("width"), height: num("height"), label: String(box.label ?? "").slice(0, 200) }
+  })
+  if (!boxes.length || boxes.some((box) => [box.x, box.y, box.width, box.height].some(Number.isNaN) || !box.width || !box.height)) {
+    throw new Error("Each box needs numeric x, y, width and height in percent (width and height above 0)")
+  }
+  const result = annotatePng(source, boxes, annotationsDir)
+  const legend = result.boxes.map((box) => `${box.n}. ${box.label}`).join("\n")
+  return {
+    content: [
+      {
+        type: "text",
+        text: [
+          `Annotated copy of ${args.image}: file "${result.file}". Check the boxes in the image below; if one misses its target, call design_annotate again.`,
+          "Put this line in your message so the person sees it:",
+          `![${path.basename(args.image)} – issues](/api/annotations/${result.file})`,
+          "",
+          legend,
+        ].join("\n"),
+      },
+      { type: "image", data: result.preview, mimeType: "image/png" },
+    ],
+  }
+}
+
+const DESIGN_IMAGE = /\.(png|jpe?g|webp|gif)$/i
+
+/**
+ * Screens exported from Figma by hand (no API limits). Agents open them with their read tool,
+ * which shows the image to the model. Modified times are listed so re-exports reach resumed agents.
+ */
+function designsSource(dir: string): SourceDoc {
+  if (!fs.existsSync(dir)) {
+    return {
+      kind: "figma",
+      title: "Figma exports (folder not found)",
+      url: dir,
+      body: `DESIGNS_DIR points to ${dir}, which does not exist. Tell the person.`,
+    }
+  }
+  const files: { rel: string; kb: number; at: string }[] = []
+  const walk = (folder: string) => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const full = path.join(folder, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (DESIGN_IMAGE.test(entry.name) && files.length < 400) {
+        const stat = fs.statSync(full)
+        files.push({ rel: path.relative(dir, full), kb: Math.round(stat.size / 1024), at: stat.mtime.toISOString().slice(0, 16) })
+      }
+    }
+  }
+  walk(dir)
+  files.sort((a, b) => a.rel.localeCompare(b.rel))
+  return {
+    kind: "figma",
+    title: `Figma exports: ${files.length} screen images`,
+    url: dir,
+    localPath: dir,
+    body: [
+      `Folder: ${dir}`,
+      "These are screens exported from Figma. File and folder names are the Figma frame and page names.",
+      "Open an image with your read tool to see the screen before you comment on it. Cite the file name.",
+      "",
+      ...(files.length ? files.map((file) => `- ${file.rel} (${file.kb} KB, exported ${file.at})`) : ["(the folder has no images yet)"]),
+    ].join("\n"),
+  }
+}
+
+const FIGMA_SUMMARY_TTL_MS = 10 * 60 * 1000
+const figmaSummaries = new Map<string, { at: number; summary: Awaited<ReturnType<typeof fetchFigmaFileSummary>> }>()
+
+/**
+ * The Figma page/frame outline changes rarely and Figma rate-limits its API, so reuse it for
+ * 10 minutes, and fall back to the last good copy when Figma refuses (e.g. rate limit).
+ */
+async function cachedFigmaSummary(sessionId: string, fileUrl: string) {
+  const cached = figmaSummaries.get(fileUrl)
+  if (cached && Date.now() - cached.at < FIGMA_SUMMARY_TTL_MS) return cached.summary
+  try {
+    const summary = await fetchFigmaFileSummary(await figmaAccess(sessionId), fileUrl)
+    figmaSummaries.set(fileUrl, { at: Date.now(), summary })
+    return summary
+  } catch (error) {
+    if (!cached) throw error
+    const minutes = Math.round((Date.now() - cached.at) / 60000)
+    return {
+      ...cached.summary,
+      body: `${cached.summary.body}\n\n(Figma refused a fresh read: ${error instanceof Error ? error.message : "error"}. This outline is ${minutes} minutes old.)`,
+    }
+  }
+}
+
+async function atlassianAccess(sessionId: string) {
+  const config = atlassianConfig(baseUrl)
+  const saved = credentials.getAtlassian(sessionId)
+  if (!config || !saved) throw new Error("Connect Atlassian in Settings")
+  const fresh = await refreshed(config, saved)
+  credentials.setAtlassian(sessionId, fresh)
+  return fresh
+}
+
+/** The Jira Software board from Setup's board URL (…/boards/4887). */
+function boardIdFor(room: Room): string {
+  const boardId = room.jiraBoardUrl ? parseJiraBoardUrl(room.jiraBoardUrl)?.boardId : null
+  if (!boardId) throw new Error("Set a Jira board URL (…/boards/<id>) in Setup, not just a project key")
+  return boardId
+}
+
+/** Figma access for API calls: FIGMA_ACCESS_TOKEN when set, otherwise the person's OAuth login. */
+async function figmaAccess(sessionId: string): Promise<FigmaAuth> {
+  const token = tokenAuth()
+  if (token) return token
+  const config = figmaConfig(baseUrl)
+  const saved = credentials.getFigma(sessionId)
+  if (!config || !saved) {
+    throw new Error("Connect Figma in Settings, or set FIGMA_ACCESS_TOKEN in .env")
+  }
+  const fresh = await refreshedFigma(config, saved)
+  credentials.setFigma(sessionId, fresh)
+  return oauthAuth(fresh)
+}
+
+/** Read-only tools for agents. Errors go back to the model as text so it can say what failed. */
+async function readTool(
+  sessionId: string,
+  room: Room,
+  name: ReadToolName,
+  args: Record<string, string>,
+): Promise<SDKCustomToolResult> {
+  try {
+    if (name === "design_annotate") return annotateTool(args)
+    if (name === "jira_list_sprints") {
+      const sprints = await listSprints(await atlassianAccess(sessionId), boardIdFor(room))
+      return sprints.length
+        ? sprints
+            .map(
+              (sprint) =>
+                `- ${sprint.id}: ${sprint.name} (${sprint.state}${sprint.startDate ? `, ${sprint.startDate.slice(0, 10)} → ${sprint.endDate?.slice(0, 10) ?? "?"}` : ""})`,
+            )
+            .join("\n")
+        : "No active or future sprints on this board."
+    }
+    if (name === "confluence_read_comments") {
+      if (!room.confluencePageUrl) throw new Error("No Confluence BRS page is set in Setup")
+      return await listConfluenceFooterComments(await atlassianAccess(sessionId), room.confluencePageUrl)
+    }
+    const fileUrl = args.file_url?.trim() || room.figmaFileUrl
+    if (!fileUrl) throw new Error("No Figma file is set in Setup")
+    const auth = await figmaAccess(sessionId)
+    if (name === "figma_list_frames") return await listFigmaFrames(auth, fileUrl, args.page)
+    if (name === "figma_read_frame") return await readFigmaFrame(auth, fileUrl, args.node_id)
+    const image = await renderFigmaFrame(auth, fileUrl, args.node_id)
+    return {
+      content: [
+        { type: "text", text: `Frame ${args.node_id}${image.scale < 1 ? ` (rendered at ${image.scale}x)` : ""}` },
+        { type: "image", data: image.data, mimeType: image.mimeType },
+      ],
+    }
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `FAILED: ${error instanceof Error ? error.message : "Figma read failed"}` }],
+      isError: true,
+    }
+  }
+}
+
 async function executePermission(
   sessionId: string,
   room: Room,
@@ -1382,6 +1963,49 @@ async function executePermission(
     const fresh = await refreshed(config, saved)
     credentials.setAtlassian(sessionId, fresh)
 
+    if (permission.mode === "runtime" && action === "attach image") {
+      const issueKey = permission.params?.issue_key || issueKeyFromTarget(permission.target)
+      const file = path.basename(permission.params?.image ?? "")
+      const full = path.join(annotationsDir, file)
+      if (!issueKey) throw new Error("Jira attach needs an issue key")
+      if (!file || !fs.existsSync(full)) throw new Error(`No annotated image "${permission.params?.image}"; run design_annotate first`)
+      const attachmentId = await attachJiraFile(fresh, issueKey, full)
+      if (permission.params?.comment?.trim()) {
+        await addJiraComment(fresh, issueKey, `${permission.params.comment.trim()}\n\n(See attachment ${file})`)
+      }
+      permission.payloadSummary = `${permission.payloadSummary} → attached ${file} to ${issueKey} (attachment ${attachmentId})`
+      return
+    }
+
+    if (permission.mode === "runtime" && action === "move to sprint") {
+      const keys = (permission.params?.issue_keys ?? "")
+        .split(/[\s,]+/)
+        .map((key) => key.trim().toUpperCase())
+        .filter((key) => /^[A-Z][A-Z0-9]+-\d+$/.test(key))
+      if (!keys.length) throw new Error("Give at least one issue key, e.g. SMETZ-114")
+      const sprints = await listSprints(fresh, boardIdFor(room))
+      const sprint = findSprint(sprints, permission.params?.sprint ?? permission.target)
+      if (!sprint) {
+        throw new Error(
+          `No single active or future sprint matches "${permission.params?.sprint}". Sprints: ${sprints.map((item) => `${item.id}: ${item.name}`).join(", ") || "none"}`,
+        )
+      }
+      await moveIssuesToSprint(fresh, sprint.id, keys)
+      permission.payloadSummary = `${permission.payloadSummary} → moved ${keys.join(", ")} into ${sprint.name} (${sprint.id})`
+      return
+    }
+
+    if (permission.mode === "runtime" && action === "update") {
+      const issueKey = permission.params?.issue_key || issueKeyFromTarget(permission.target)
+      if (!issueKey) throw new Error("Jira update needs an issue key")
+      await updateJiraIssue(fresh, issueKey, {
+        summary: permission.params?.summary,
+        description: permission.params?.description,
+      })
+      permission.payloadSummary = `${permission.payloadSummary} → updated ${issueKey}`
+      return
+    }
+
     if (action.includes("comment") || action.includes("ac") || action.includes("attach")) {
       const issueKey = issueKeyFromTarget(permission.target) || issueKeyFromTarget(permission.payloadSummary)
       if (!issueKey) {
@@ -1396,18 +2020,22 @@ async function executePermission(
     if (!projectKey) {
       throw new Error("Set a Jira project key in Setup before approving Jira writes")
     }
-    const issueType = inferJiraIssueType(permission.action, permission.payloadSummary)
-    const summary = summaryFromPayload(permission.payloadSummary, permission.action)
+    const params = permission.params ?? {}
+    const issueType =
+      (params.issue_type as "Epic" | "Story" | "Subtask" | "Task" | "Bug" | undefined) ||
+      inferJiraIssueType(permission.action, permission.payloadSummary)
+    const summary = params.summary || summaryFromPayload(permission.payloadSummary, permission.action)
     const parentKey =
-      issueType === "Story" || issueType === "Subtask" || issueType === "Task"
+      params.parent_key ||
+      (issueType === "Story" || issueType === "Subtask" || issueType === "Task"
         ? room.jiraEpicKey || undefined
-        : undefined
+        : undefined)
     const created = await createJiraIssue(fresh, {
       projectKey,
       summary,
       issueType,
       parentKey,
-      description: `${permission.payloadSummary}\n\nRequested by ${permission.roleTitle} in room ${room.id}.`,
+      description: `${params.description || permission.payloadSummary}\n\nRequested by ${permission.roleTitle} in room ${room.id}.`,
     })
     if (issueType === "Epic") room.jiraEpicKey = created.key
     permission.payloadSummary = `${permission.payloadSummary} → created ${created.key}${parentKey ? ` under ${parentKey}` : ""}`
@@ -1438,15 +2066,8 @@ async function executePermission(
     if (!room.figmaFileUrl) {
       throw new Error("Set a Figma file URL in Setup before approving Figma comments")
     }
-    const config = figmaConfig(baseUrl)
-    const saved = credentials.getFigma(sessionId)
-    if (!config || !saved) {
-      throw new Error("Connect Figma before approving Figma writes")
-    }
-    const fresh = await refreshedFigma(config, saved)
-    credentials.setFigma(sessionId, fresh)
     const commented = await addFigmaComment(
-      fresh,
+      await figmaAccess(sessionId),
       room.figmaFileUrl,
       `${permission.payloadSummary}\n\n— ${permission.roleTitle} / room ${room.id}`,
     )
@@ -1475,7 +2096,7 @@ async function executePermission(
       ) ||
       room.gitRepos[0]
     const headBranch = `agent-room/${room.id}`.slice(0, 100)
-    const title = summaryFromPayload(permission.payloadSummary, permission.action)
+    const title = permission.params?.title || summaryFromPayload(permission.payloadSummary, permission.action)
     const files = buildPrFiles({
       room,
       repo,

@@ -1,6 +1,7 @@
 import { formatMemoryForPacket, indexAgentOutput, memoryEntriesForRoom } from "./memory.js"
 import { parseWritePlans, slugifyRequirement } from "./permissions.js"
 import type { StageRunner } from "./runner.js"
+import type { RuntimeTools } from "./tools.js"
 import type { AgentFile, ChatMessage, Packet, PacketView, Room, SourceDoc, StageState } from "./types.js"
 
 /** Set by server so room pipeline can index shared memory. */
@@ -82,6 +83,8 @@ export type RunHooks = {
   onRoom?: (room: Room) => void
   onDelta?: (roleName: string, text: string) => void
   loadSources?: (room: Room, roleName: string) => Promise<SourceDoc[]>
+  /** Runtime write tools for one role run. `room` is the live room the run mutates. */
+  toolsFor?: (room: Room, agent: AgentFile) => RuntimeTools | undefined
 }
 
 export function recover(room: Room): Room {
@@ -158,7 +161,11 @@ export async function runUntilWait(
     hooks.onRoom?.(clone(next))
 
     try {
-      const result = await runner(packet, (text) => hooks.onDelta?.(stage.name, text))
+      const result = await runner(
+        packet,
+        (text) => hooks.onDelta?.(stage.name, text),
+        hooks.toolsFor?.(next, agent),
+      )
       stage.output = result.output
       stage.agentId = result.agentId ?? null
       stage.status = agent.needsApproval ? "waiting_approval" : "done"

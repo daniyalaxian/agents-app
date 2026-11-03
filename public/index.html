@@ -10,255 +10,268 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app">
-      <header class="top">
-        <div class="brand">
+    <div class="layout">
+      <nav id="sidebar" class="sidebar" aria-label="Sprint navigation">
+        <div class="sprint">
           <span class="brand-mark" aria-hidden="true"></span>
-          <div>
-            <h1>Agent Room</h1>
-            <p id="engine" class="engine">Local drafts</p>
+          <div class="sprint-text">
+            <p class="sprint-label">Agent Room</p>
+            <p id="sprint-name" class="sprint-name">New sprint</p>
           </div>
         </div>
-        <div class="top-actions">
-          <span id="atlassian-status" class="status-pill">Atlassian not connected</span>
-          <span id="figma-status" class="status-pill">Figma not connected</span>
-          <span id="github-status" class="status-pill">GitHub not connected</span>
-          <span id="account-status" class="status-pill">Guest</span>
-          <button id="open-account" class="ghost" type="button">Account</button>
-          <button id="open-catalog" class="ghost" type="button">Catalog</button>
-          <button id="open-teams" class="ghost" type="button">Teams</button>
-          <button id="open-agents" class="ghost" type="button">Agents</button>
-          <button id="open-memory" class="ghost" type="button">Memory</button>
-          <button id="open-setup" class="ghost" type="button">Setup</button>
-          <button id="reset" class="ghost" type="button">Reset</button>
+        <div class="side-actions">
+          <button id="new-sprint" class="side-link" type="button">+ New sprint</button>
+          <button id="edit-setup" class="side-link" type="button">Edit setup</button>
         </div>
-      </header>
 
-      <div id="chips" class="chips" aria-label="Pipeline stages"></div>
+        <p class="side-heading">Steps</p>
+        <button class="side-item" type="button" data-view="kickoff">
+          <span class="step-num">1</span><span class="side-text">Kickoff</span><span id="kickoff-dot" class="dot"></span>
+        </button>
+        <button class="side-item" type="button" data-view="build">
+          <span class="step-num">2</span><span class="side-text">Build &amp; ship</span><span id="build-dot" class="dot"></span>
+        </button>
 
-      <main class="chat">
-        <div id="empty" class="empty" hidden>
-          <p class="empty-kicker">Sprint room</p>
-          <h2>What should the agents work on?</h2>
-          <p class="empty-copy">Edit the requirement, connect sources in Setup, then start. Write plans become permission cards you approve one by one.</p>
-          <form id="requirement-form" class="requirement-form">
-            <label class="field">
-              <span>Requirement</span>
-              <textarea id="requirement-text" rows="3" placeholder="Describe this sprint slice…"></textarea>
-            </label>
-            <button type="submit">Save requirement</button>
-            <p id="requirement-preview" class="source-preview"></p>
-          </form>
+        <p class="side-heading">Direct messages</p>
+        <ul id="agent-list" class="agent-list"></ul>
+
+        <div class="side-foot">
+          <button class="side-item" type="button" data-view="settings">
+            <span class="step-num" aria-hidden="true">⚙</span><span class="side-text">Settings</span>
+          </button>
+          <div class="conn-list">
+            <span id="atlassian-status" class="conn">Atlassian</span>
+            <span id="figma-status" class="conn">Figma</span>
+            <span id="github-status" class="conn">GitHub</span>
+            <span id="account-status" class="conn">Guest</span>
+          </div>
         </div>
-        <div id="permissions" class="permissions" hidden>
-          <h2>Permission cards</h2>
-          <p class="permissions-lead">External writes wait here until you approve. Pipeline Approve is separate.</p>
-          <ul id="permission-list" class="permission-list"></ul>
-        </div>
-        <div id="transcript" class="transcript"></div>
+      </nav>
+      <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
+
+      <main class="main">
+        <header class="view-head">
+          <button id="menu" class="ghost menu-btn" type="button" aria-label="Open menu">☰</button>
+          <div class="view-head-text">
+            <h1 id="view-title">Kickoff</h1>
+            <p id="view-sub" class="view-sub"></p>
+          </div>
+          <span id="engine" class="mode-badge"></span>
+        </header>
+
+        <!-- Step-by-step sprint setup. Setup blocks are moved in here by app.js. -->
+        <section id="view-wizard" class="view page-view" hidden>
+          <ol class="wizard-steps">
+            <li data-step-tab="1">Connect accounts</li>
+            <li data-step-tab="2">Sprint sources</li>
+            <li data-step-tab="3">Requirement</li>
+          </ol>
+          <div id="wizard-body" class="wizard-body"></div>
+          <p id="wizard-error" class="source-preview error"></p>
+          <div class="wizard-nav">
+            <button id="wizard-back" class="ghost" type="button">Back</button>
+            <button id="wizard-skip" class="ghost" type="button">Skip</button>
+            <button id="wizard-next" class="primary" type="button">Continue</button>
+          </div>
+        </section>
+
+        <section id="view-kickoff" class="view chat-view" hidden>
+          <div id="group-thread" class="thread"></div>
+          <div class="dock">
+            <div class="ask-slot"></div>
+            <p id="group-status" class="status-line"></p>
+            <form id="group-form" class="composer">
+              <textarea id="group-input" rows="1" placeholder="Message the group. Use @sa, @lead or @qa to ask one agent."></textarea>
+              <button id="group-send" type="submit">Start discussion</button>
+            </form>
+            <div class="view-actions">
+              <button id="group-pause" class="ghost small" type="button" hidden>Pause</button>
+              <button id="group-handoff" class="ghost small" type="button" hidden>Finish kickoff → Build</button>
+              <button id="group-reset" class="ghost small" type="button">Start over</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-build" class="view chat-view" hidden>
+          <div id="chips" class="chips" aria-label="Build steps"></div>
+          <div class="thread">
+            <div id="permissions" class="permissions" hidden>
+              <h2>Waiting for your OK</h2>
+              <ul id="permission-list" class="permission-list"></ul>
+            </div>
+            <div id="transcript" class="transcript"></div>
+          </div>
+          <div class="dock">
+            <div class="ask-slot"></div>
+            <form id="composer" class="composer"></form>
+          </div>
+        </section>
+
+        <section id="view-dm" class="view chat-view" hidden>
+          <div id="dm-thread" class="thread"></div>
+          <div class="dock">
+            <div class="ask-slot"></div>
+            <form id="dm-form" class="composer">
+              <textarea id="dm-input" rows="1" placeholder="Message this agent…"></textarea>
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="view-settings" class="view page-view" hidden>
+          <div class="tabs" role="tablist">
+            <button class="tab" type="button" data-tab="sources">Sprint sources</button>
+            <button class="tab" type="button" data-tab="memory">Memory</button>
+            <button class="tab" type="button" data-tab="team">Team &amp; agents</button>
+            <button class="tab" type="button" data-tab="account">Account</button>
+          </div>
+
+          <div class="tab-panel" data-panel="sources">
+            <div id="settings-sources"></div>
+          </div>
+
+          <div class="tab-panel" data-panel="memory" hidden>
+            <p class="lead">What the agents have learned this sprint: gaps, decisions, tests and approvals. Every agent reads this.</p>
+            <ul id="memory-list" class="memory-list"></ul>
+            <form id="memory-form" class="source-form card">
+              <h3>Add a note for the agents</h3>
+              <label class="field"><span>Title</span><input id="memory-title" placeholder="e.g. Payments owns status" /></label>
+              <label class="field"><span>Note</span><textarea id="memory-body" rows="3" placeholder="Finding or decision…"></textarea></label>
+              <button type="submit">Save note</button>
+              <p id="memory-preview" class="source-preview"></p>
+            </form>
+          </div>
+
+          <div class="tab-panel" data-panel="team" hidden>
+            <p class="lead">Which agents work on this sprint. The default team covers the whole SDLC. Sign in to save your own.</p>
+            <ul id="teams-list" class="memory-list"></ul>
+            <form id="team-create" class="source-form card">
+              <h3>New team</h3>
+              <label class="field"><span>Name</span><input id="team-name" placeholder="QA-only team" /></label>
+              <label class="field"><span>Agents, in order (comma separated)</span><input id="team-agents" placeholder="sa, software-lead, qa-design" /></label>
+              <button type="submit">Save team</button>
+              <p id="teams-preview" class="source-preview"></p>
+            </form>
+            <h3 class="section-title">Agents</h3>
+            <ul id="catalog-list" class="memory-list"></ul>
+            <form id="catalog-edit" class="source-form card" hidden>
+              <h3 id="catalog-edit-title">Edit agent</h3>
+              <label class="field"><span>Title</span><input id="catalog-title" /></label>
+              <label class="field"><span>Tools (comma separated)</span><input id="catalog-tools" placeholder="jira, figma, github" /></label>
+              <label class="field check"><input id="catalog-needs-approval" type="checkbox" /><span>Pause for my OK after this agent</span></label>
+              <label class="field"><span>Instructions</span><textarea id="catalog-instructions" rows="6"></textarea></label>
+              <label class="field"><span>Offline draft reply</span><textarea id="catalog-draft" rows="6"></textarea></label>
+              <button type="submit">Save agent</button>
+              <p id="catalog-preview" class="source-preview"></p>
+            </form>
+          </div>
+
+          <div class="tab-panel" data-panel="account" hidden>
+            <p class="lead">Sign in to save your own agents and teams. Guest mode works for the default team.</p>
+            <div id="account-signed-in" class="card" hidden>
+              <p id="account-user" class="source-preview"></p>
+              <button id="logout" class="ghost" type="button">Sign out</button>
+            </div>
+            <form id="login-form" class="source-form card">
+              <h3>Sign in</h3>
+              <label class="field"><span>Email</span><input id="login-email" type="email" required /></label>
+              <label class="field"><span>Password</span><input id="login-password" type="password" required /></label>
+              <button type="submit">Sign in</button>
+            </form>
+            <form id="register-form" class="source-form card">
+              <h3>Create an account</h3>
+              <label class="field"><span>Name</span><input id="register-name" /></label>
+              <label class="field"><span>Email</span><input id="register-email" type="email" required /></label>
+              <label class="field"><span>Password</span><input id="register-password" type="password" required minlength="6" /></label>
+              <label class="field"><span>Workspace name</span><input id="register-workspace" placeholder="My workspace" /></label>
+              <button type="submit">Create account</button>
+              <p id="account-preview" class="source-preview"></p>
+            </form>
+          </div>
+        </section>
       </main>
-
-      <footer class="dock">
-        <form id="composer" class="composer"></form>
-      </footer>
     </div>
 
-    <div id="setup-backdrop" class="backdrop" hidden></div>
-    <aside id="account-drawer" class="drawer" hidden aria-label="Account">
-      <div class="drawer-head">
-        <h2>Account</h2>
-        <button id="close-account" class="ghost" type="button">Close</button>
+    <!-- Shared pieces that app.js moves into the active view. -->
+    <div id="parts" hidden>
+      <section id="live-asks" class="live-asks" aria-live="polite" hidden>
+        <ul id="live-ask-list" class="ask-list"></ul>
+      </section>
+
+      <div id="setup-connect" class="setup-block">
+        <h2>Connect your accounts</h2>
+        <p class="lead">Agents read the BRS, Figma and code with your access. Nothing is written without your OK.</p>
+        <div class="connect-row card">
+          <div><strong>Atlassian</strong><p class="lead">Confluence BRS and Jira</p></div>
+          <a id="connect-atlassian" class="button-link" href="/auth/atlassian">Connect</a>
+          <button id="disconnect-atlassian" class="ghost small" type="button" hidden>Disconnect</button>
+        </div>
+        <div class="connect-row card">
+          <div><strong>Figma</strong><p class="lead">Sprint designs</p></div>
+          <a id="connect-figma" class="button-link" href="/auth/figma">Connect</a>
+          <button id="disconnect-figma" class="ghost small" type="button" hidden>Disconnect</button>
+        </div>
+        <div class="connect-row card">
+          <div><strong>GitHub</strong><p class="lead">Existing code and pull requests</p></div>
+          <a id="connect-github" class="button-link" href="/auth/github">Connect</a>
+          <button id="disconnect-github" class="ghost small" type="button" hidden>Disconnect</button>
+        </div>
       </div>
-      <p class="drawer-lead">Local email login. Each user gets a workspace for custom agents and teams. Guest mode still works for the default SDLC team.</p>
-      <div id="account-signed-in" hidden>
-        <p id="account-user" class="source-preview"></p>
-        <button id="logout" type="button">Sign out</button>
-      </div>
-      <form id="login-form" class="source-form">
-        <h3>Sign in</h3>
-        <label class="field"><span>Email</span><input id="login-email" type="email" required /></label>
-        <label class="field"><span>Password</span><input id="login-password" type="password" required /></label>
-        <button type="submit">Sign in</button>
-      </form>
-      <form id="register-form" class="source-form">
-        <h3>Register</h3>
-        <label class="field"><span>Name</span><input id="register-name" /></label>
-        <label class="field"><span>Email</span><input id="register-email" type="email" required /></label>
-        <label class="field"><span>Password</span><input id="register-password" type="password" required minlength="6" /></label>
-        <label class="field"><span>Workspace name</span><input id="register-workspace" placeholder="My workspace" /></label>
-        <button type="submit">Create account</button>
-        <p id="account-preview" class="source-preview"></p>
-      </form>
-    </aside>
-    <aside id="catalog-drawer" class="drawer drawer-wide" hidden aria-label="Agent catalog">
-      <div class="drawer-head">
-        <h2>Agent catalog</h2>
-        <button id="close-catalog" class="ghost" type="button">Close</button>
-      </div>
-      <p class="drawer-lead">Prebuilt SDLC roles plus your custom clones. Write tools require needs_approval. Sign in to duplicate or edit.</p>
-      <ul id="catalog-list" class="memory-list"></ul>
-      <form id="catalog-edit" class="source-form" hidden>
-        <h3 id="catalog-edit-title">Edit custom agent</h3>
-        <label class="field"><span>Title</span><input id="catalog-title" /></label>
-        <label class="field"><span>Tools (comma)</span><input id="catalog-tools" placeholder="jira, figma, github" /></label>
-        <label class="field"><span><input id="catalog-needs-approval" type="checkbox" /> Needs approval</span></label>
-        <label class="field"><span>Instructions</span><textarea id="catalog-instructions" rows="6"></textarea></label>
-        <label class="field"><span>Draft</span><textarea id="catalog-draft" rows="6"></textarea></label>
-        <button type="submit">Save custom agent</button>
-        <p id="catalog-preview" class="source-preview"></p>
-      </form>
-    </aside>
-    <aside id="teams-drawer" class="drawer" hidden aria-label="Teams">
-      <div class="drawer-head">
-        <h2>Teams</h2>
-        <button id="close-teams" class="ghost" type="button">Close</button>
-      </div>
-      <p class="drawer-lead">Pick a swarm before Start. Default is SDLC Sprint Team. Sign in to save custom ordered teams.</p>
-      <ul id="teams-list" class="memory-list"></ul>
-      <form id="team-create" class="source-form">
-        <h3>New team</h3>
-        <label class="field"><span>Name</span><input id="team-name" placeholder="QA-only swarm" /></label>
-        <label class="field"><span>Agent names (comma, order matters)</span><input id="team-agents" placeholder="sa, software-lead, qa-design" /></label>
-        <button type="submit">Save team</button>
-        <p id="teams-preview" class="source-preview"></p>
-      </form>
-    </aside>
-    <aside id="agents-drawer" class="drawer drawer-wide" hidden aria-label="Agent DMs">
-      <div class="drawer-head">
-        <h2>Agent DMs</h2>
-        <button id="close-agents" class="ghost" type="button" aria-label="Close agents">Close</button>
-      </div>
-      <p class="drawer-lead">1:1 with any role. Shared memory is in the packet. Write plans still need Approve write.</p>
-      <div class="dm-layout">
-        <ul id="agent-list" class="agent-list"></ul>
-        <div class="dm-pane">
-          <h3 id="dm-title" class="dm-title">Select an agent</h3>
-          <div id="dm-thread" class="dm-thread"></div>
-          <form id="dm-form" class="dm-form" hidden>
-            <textarea id="dm-input" rows="3" placeholder="Message this agent…"></textarea>
-            <button type="submit">Send</button>
+
+      <div id="setup-sources" class="setup-block">
+        <h2>Where is this sprint?</h2>
+        <p class="lead">Fill in what you have. You can change Jira, Figma and repos later.</p>
+        <form id="source-form" class="source-form card">
+          <h3>Business requirements (BRS)</h3>
+          <label class="field"><span>Confluence page URL</span><input id="confluence-url" placeholder="https://…/wiki/spaces/…/pages/123/…" /></label>
+          <label class="field"><span>Or paste the BRS text</span><textarea id="pasted-brd" rows="5" placeholder="Paste BRS text here…"></textarea></label>
+          <button class="save-btn" type="submit">Save BRS</button>
+          <p id="source-preview" class="source-preview"></p>
+        </form>
+        <form id="figma-form" class="source-form card">
+          <h3>Figma</h3>
+          <label class="field"><span>Sprint Figma file URL</span><input id="figma-url" placeholder="https://www.figma.com/design/…" /></label>
+          <button class="save-btn" type="submit">Save Figma link</button>
+          <p id="figma-preview" class="source-preview"></p>
+        </form>
+        <form id="jira-form" class="source-form card">
+          <h3>Jira</h3>
+          <label class="field"><span>Board URL or project key</span><input id="jira-board-url" placeholder="ORD or https://…atlassian.net/jira/software/projects/ORD/boards/1" /></label>
+          <button class="save-btn" type="submit">Save Jira</button>
+          <p id="jira-preview" class="source-preview"></p>
+        </form>
+        <div class="card">
+          <h3>Code repositories</h3>
+          <ul id="git-repo-list" class="repo-list"></ul>
+          <form id="git-form" class="source-form inline-form">
+            <label class="field"><span>Repository URL</span><input id="git-repo-url" placeholder="https://github.com/owner/orders-api" /></label>
+            <label class="field"><span>Branch</span><input id="git-branch" placeholder="main" /></label>
+            <button type="submit">Add repo</button>
+            <p id="git-preview" class="source-preview"></p>
           </form>
         </div>
       </div>
-    </aside>
-    <aside id="memory-drawer" class="drawer" hidden aria-label="Shared memory">
-      <div class="drawer-head">
-        <h2>Shared memory</h2>
-        <button id="close-memory" class="ghost" type="button" aria-label="Close memory">Close</button>
-      </div>
-      <p class="drawer-lead">Sprint-scoped findings (gaps, decisions, tests, approvals, PRs). Every room role and DM reads this.</p>
-      <ul id="memory-list" class="memory-list"></ul>
-      <form id="memory-form" class="source-form">
-        <label class="field">
-          <span>Add note</span>
-          <input id="memory-title" placeholder="Title" />
-        </label>
-        <label class="field">
-          <span>Body</span>
-          <textarea id="memory-body" rows="3" placeholder="Finding or decision…"></textarea>
-        </label>
-        <button type="submit">Save to memory</button>
-        <p id="memory-preview" class="source-preview"></p>
-      </form>
-    </aside>
-    <aside id="setup-drawer" class="drawer" hidden aria-label="Project setup">
-      <div class="drawer-head">
-        <h2>Setup</h2>
-        <button id="close-setup" class="ghost" type="button" aria-label="Close setup">Close</button>
-      </div>
-      <p class="drawer-lead">Connect accounts and set sources here. BRS locks after the room starts; Figma and GitHub can still be updated. Use Reset to change BRS.</p>
 
-      <div class="drawer-block">
-        <h3>Atlassian</h3>
-        <p class="drawer-lead">One Connect covers Confluence + Jira. Enable comment + Jira write scopes, then Disconnect and Connect again. Writes still need Approve write.</p>
-        <div class="drawer-row">
-          <a id="connect-atlassian" class="button-link" href="/auth/atlassian">Connect Atlassian</a>
-          <button id="disconnect-atlassian" class="ghost" type="button" hidden>Disconnect</button>
-        </div>
-        <form id="jira-form" class="source-form">
-          <label class="field">
-            <span>Jira board or project URL / key</span>
-            <input id="jira-board-url" name="jiraBoardUrl" placeholder="https://…atlassian.net/jira/software/projects/ORD/boards/1 or ORD" />
-          </label>
-          <button type="submit">Save Jira board</button>
-          <p id="jira-preview" class="source-preview"></p>
-        </form>
-      </div>
-
-      <div class="drawer-block">
-        <h3>Figma</h3>
-        <p class="drawer-lead">Connect your account, then paste this sprint’s Figma file URL. Needs file read + comment scopes. Comments post only after Approve write.</p>
-        <div class="drawer-row">
-          <a id="connect-figma" class="button-link" href="/auth/figma">Connect Figma</a>
-          <button id="disconnect-figma" class="ghost" type="button" hidden>Disconnect</button>
-        </div>
-        <form id="figma-form" class="source-form">
-          <label class="field">
-            <span>Sprint Figma file URL</span>
-            <input id="figma-url" name="figmaFileUrl" placeholder="https://www.figma.com/design/…/…" />
-          </label>
-          <button type="submit">Save Figma link</button>
-          <p id="figma-preview" class="source-preview"></p>
-        </form>
-      </div>
-
-      <div class="drawer-block">
-        <h3>GitHub</h3>
-        <p class="drawer-lead">Connect your account (needs `repo` scope), then add each microservice repo + branch. PRs open only after Approve write on a GitHub permission card.</p>
-        <div class="drawer-row">
-          <a id="connect-github" class="button-link" href="/auth/github">Connect GitHub</a>
-          <button id="disconnect-github" class="ghost" type="button" hidden>Disconnect</button>
-        </div>
-        <ul id="git-repo-list" class="repo-list"></ul>
-        <form id="git-form" class="source-form">
-          <label class="field">
-            <span>Add repository URL</span>
-            <input id="git-repo-url" name="gitRepoUrl" placeholder="https://github.com/owner/orders-api" />
-          </label>
-          <label class="field">
-            <span>Branch</span>
-            <input id="git-branch" name="gitBranch" placeholder="main" />
-          </label>
-          <button type="submit">Add repo</button>
-          <p id="git-preview" class="source-preview"></p>
-        </form>
-      </div>
-
-      <div class="drawer-block">
-        <h3>Deploy / Jenkins</h3>
-        <p class="drawer-lead">Set the env ladder target and deploy URL Jenkins (or smoke) should hit. Job triggers only after Approve write on a Jenkins permission card. Smoke callback: <code>POST /api/jenkins/smoke</code> with bearer <code>JENKINS_SMOKE_TOKEN</code>.</p>
-        <form id="deploy-form" class="source-form">
-          <label class="field">
-            <span>Environment</span>
-            <input id="deploy-env" name="deployEnv" placeholder="Dev / Testing / Preprod / Prod" />
-          </label>
-          <label class="field">
-            <span>Deploy base URL</span>
-            <input id="deploy-url" name="deployUrl" placeholder="https://orders-dev.example.com" />
-          </label>
-          <label class="field">
-            <span>Jenkins job name</span>
-            <input id="jenkins-job" name="jenkinsJob" placeholder="order-status-deploy or folder/job" />
-          </label>
+      <div id="setup-deploy" class="setup-block">
+        <form id="deploy-form" class="source-form card">
+          <h3>Deploy (Jenkins)</h3>
+          <label class="field"><span>Environment</span><input id="deploy-env" placeholder="Dev / Testing / Preprod / Prod" /></label>
+          <label class="field"><span>App URL for that environment</span><input id="deploy-url" placeholder="https://orders-dev.example.com" /></label>
+          <label class="field"><span>Jenkins job name</span><input id="jenkins-job" placeholder="order-status-deploy" /></label>
           <button type="submit">Save deploy settings</button>
           <p id="deploy-preview" class="source-preview"></p>
         </form>
       </div>
 
-      <form id="source-form" class="source-form">
-        <h3>BRS for SA</h3>
-        <label class="field">
-          <span>Confluence page URL</span>
-          <input id="confluence-url" name="confluencePageUrl" placeholder="https://…/wiki/spaces/…/pages/123/…" />
-        </label>
-        <label class="field">
-          <span>Or paste BRS text</span>
-          <textarea id="pasted-brd" name="pastedBrd" rows="8" placeholder="Paste BRS text here…"></textarea>
-        </label>
-        <button type="submit">Save BRS source</button>
-        <p id="source-preview" class="source-preview"></p>
-      </form>
-    </aside>
+      <div id="setup-requirement" class="setup-block">
+        <h2>What should the team work on?</h2>
+        <p class="lead">Describe the feature or story for this sprint. SA, Lead and QA will discuss it with the sources above.</p>
+        <form id="requirement-form" class="source-form card">
+          <label class="field"><span>Requirement</span><textarea id="requirement-text" rows="5" placeholder="e.g. Show payment status on the order screen…"></textarea></label>
+          <p id="requirement-preview" class="source-preview"></p>
+        </form>
+      </div>
+    </div>
 
     <script src="/app.js"></script>
   </body>
