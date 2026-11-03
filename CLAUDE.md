@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `npm run dev`: starts the server with watch (`tsx watch src/server.ts`) on `PORT` (default 4173).
 - `npm start`: starts the server without watch.
-- `npm run check`: runs `src/walkthrough.ts`. This is the only test. It is an assertion script, not a test framework. It drives the full pipeline with the offline draft runner and checks credential sealing, which sources each role gets, approval gating and prior-output handoff. Add new checks to this file.
+- `npm run check`: runs `src/walkthrough.ts`. This is the only test. It is an assertion script, not a test framework. It drives the full pipeline with the offline draft runner and checks credential sealing, which sources each role gets, approval gating and prior-output handoff. Add new checks to this file. There is no way to run a single check; the script runs all of them in one pass.
 - Type check: `npx tsc --noEmit`. No script or linter is configured.
 
 Config is read from `.env` by the custom loader in `src/env.ts` (not dotenv). See `.env.example`. Without `CURSOR_API_KEY`, the app runs in **draft mode**: each role returns the `## Draft` section of its agent file instead of calling an LLM.
@@ -52,5 +52,5 @@ Keep element IDs stable, because handlers look them up once at load. Agent text 
 ## Project docs and rules
 
 - `project/AGENTS.md` is the project profile included in every agent prompt. It holds the rules every role follows: cite sources, record gaps instead of inventing requirements, never write externally without an approved Write plan, stay inside the role, and respect the Dev → Testing → Preprod → Prod ladder and the Jira Epic → Story → Subtask → Bug hierarchy.
-- `project/BUILD-ROADMAP.md` is the phase-by-phase checklist (Phases 0–8) and the source of truth for what is done and what comes next. `project/SDLC-DESIGN.md` describes the target design.
+- `project/BUILD-ROADMAP.md` is the phase-by-phase checklist (Phases 0–8) and the source of truth for what is done and what comes next. `project/SDLC-DESIGN.md` describes the target design. `project/PRODUCT-PHASES.md` covers the product-level phasing.
 - Prompts and packets must never contain tokens or credentials. The walkthrough checks this.
