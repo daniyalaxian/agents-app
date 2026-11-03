@@ -106,3 +106,13 @@ export function setEnvironmentRepos(root: string, id: string, gitRepos: GitRepoR
   write(root, store)
   return env
 }
+
+/**
+ * Key under which custom agents and teams are stored. Default keeps the plain workspace id, so agents made before
+ * environments existed stay where they were; every other environment gets its own key and so its own agents.
+ */
+export function scopeFor(workspaceId: string | null, environmentId: string | null | undefined): string | null {
+  if (!workspaceId) return null
+  if (!environmentId || environmentId === DEFAULT_ENV_ID) return workspaceId
+  return `${workspaceId}~${environmentId}`
+}

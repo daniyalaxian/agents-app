@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url"
 import { loadAgents } from "./agents.js"
 import { decryptJson, encryptJson, loadSecrets, sealed, unseal } from "./crypto.js"
 import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, softResetRoom } from "./router.js"
-import { canUseEnvironment, createEnvironment, listEnvironments } from "./environments.js"
+import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from "./environments.js"
 import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, parseTurnTag, resolveAlias, runGroup } from "./group.js"
-import { resolveTeamAgents } from "./catalog.js"
+import { duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { sourceScope } from "./scope.js"
 import { importAxian } from "./toolkit.js"
 import { PermissionGate } from "./gate.js"
@@ -387,6 +387,18 @@ assert(readRoom(root, roomA.slot)?.notes.includes("written by a run that started
 assert(!readRoom(root)?.notes.length, "the other room must not receive that write")
 const reset = softResetRoom(roomA, agents, "New wording")
 assert(reset.slot === roomA.slot && reset.environmentId === envA.id && reset.id.startsWith(`${envA.id}--`), "a soft reset keeps the room's slot and environment")
+
+// Custom agents are per environment: Default keeps the workspace-level ones, others start clean.
+const scopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "scope-"))
+fs.cpSync(path.join(root, "agents"), path.join(scopeRoot, "agents"), { recursive: true })
+assert(scopeFor("ws-a", "env-default") === "ws-a" && scopeFor("ws-a", null) === "ws-a", "Default keeps the plain workspace key")
+assert(scopeFor("ws-a", envA.id) === `ws-a~${envA.id}` && scopeFor(null, envA.id) === null, "other environments get their own key")
+const baseName = listCatalog(scopeRoot, null)[0].name
+duplicateAgent(scopeRoot, scopeFor("ws-a", envA.id)!, baseName, { name: "env-only-agent" })
+const hasAgent = (scope: string | null) => listCatalog(scopeRoot, scope).some((agent) => agent.name === "env-only-agent")
+assert(hasAgent(scopeFor("ws-a", envA.id)), "an agent made in an environment is visible there")
+assert(!hasAgent(scopeFor("ws-a", "env-default")) && !hasAgent(scopeFor("ws-a", "env-other")), "it must not leak into Default or another environment")
+fs.rmSync(scopeRoot, { recursive: true, force: true })
 
 if (savedDataDir === undefined) delete process.env.DATA_DIR
 else process.env.DATA_DIR = savedDataDir

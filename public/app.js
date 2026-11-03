@@ -299,7 +299,7 @@ async function reloadAfterSwitch(room) {
   const group = await fetch("/api/group").then((response) => response.json())
   render(room || (await fetch("/api/room").then((response) => response.json())))
   if (!group.error) renderGroup(group)
-  await loadEnvironments()
+  await Promise.all([loadEnvironments(), loadCatalog(), loadTeams(), loadAgentCatalog()])
   const started = Boolean(lastRoom.confluencePageUrl || lastRoom.pastedBrd || group.thread?.messages?.length)
   if (started) showView("kickoff")
   else showView("wizard", { step: 1 })

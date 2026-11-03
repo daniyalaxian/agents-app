@@ -102,6 +102,7 @@ import {
   getEnvironment,
   listEnvironments,
   setEnvironmentRepos,
+  scopeFor,
 } from "./environments.js"
 import { parseWritePlans } from "./permissions.js"
 import {
@@ -235,10 +236,19 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true })
 })
 
+/** Custom agents and teams live per environment (Default keeps the workspace-level ones). */
+function userScope(user: { workspaceId: string } | null | undefined): string | null {
+  return scopeFor(user?.workspaceId ?? null, current().environmentId)
+}
+
+function writeScope(user: { workspaceId: string }): string {
+  return scopeFor(user.workspaceId, current().environmentId) as string
+}
+
 app.get("/api/catalog", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const user = userForSession(root, sessionId)
-  const catalog = listCatalog(root, user?.workspaceId ?? null).map((agent) => ({
+  const catalog = listCatalog(root, userScope(user)).map((agent) => ({
     name: agent.name,
     title: agent.title,
     needsApproval: agent.needsApproval,
@@ -254,7 +264,7 @@ app.get("/api/catalog", (req, res) => {
 app.get("/api/catalog/:name", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const user = userForSession(root, sessionId)
-  const agent = findCatalogAgent(root, user?.workspaceId ?? null, String(req.params.name))
+  const agent = findCatalogAgent(root, userScope(user), String(req.params.name))
   if (!agent) {
     res.status(404).json({ error: "Agent not found" })
     return
@@ -282,7 +292,7 @@ app.post("/api/catalog/duplicate", (req, res) => {
       res.status(400).json({ error: "sourceName required" })
       return
     }
-    const agent = duplicateAgent(root, user.workspaceId, sourceName, {
+    const agent = duplicateAgent(root, writeScope(user), sourceName, {
       name: typeof req.body?.name === "string" ? req.body.name : undefined,
       title: typeof req.body?.title === "string" ? req.body.title : undefined,
     })
@@ -305,7 +315,7 @@ app.post("/api/catalog/:name", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   try {
     const user = requireUser(root, sessionId)
-    const agent = updateCustomAgent(root, user.workspaceId, String(req.params.name), {
+    const agent = updateCustomAgent(root, writeScope(user), String(req.params.name), {
       title: typeof req.body?.title === "string" ? req.body.title : undefined,
       instructions: typeof req.body?.instructions === "string" ? req.body.instructions : undefined,
       draft: typeof req.body?.draft === "string" ? req.body.draft : undefined,
@@ -334,7 +344,7 @@ app.delete("/api/catalog/:name", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   try {
     const user = requireUser(root, sessionId)
-    deleteCustomAgent(root, user.workspaceId, String(req.params.name))
+    deleteCustomAgent(root, writeScope(user), String(req.params.name))
     res.json({ ok: true })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Delete failed" })
@@ -351,7 +361,7 @@ app.post("/api/toolkits/axian/import", (req, res) => {
       res.status(400).json({ error: "Give the Axian kit folder, or set AXIAN_KIT_PATH" })
       return
     }
-    res.json(importAxian(root, user.workspaceId, kitPath, { overwrite: req.body?.overwrite === true }))
+    res.json(importAxian(root, writeScope(user), kitPath, { overwrite: req.body?.overwrite === true }))
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Import failed" })
   }
@@ -360,7 +370,7 @@ app.post("/api/toolkits/axian/import", (req, res) => {
 app.get("/api/teams", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const user = userForSession(root, sessionId)
-  res.json({ teams: listTeams(root, user?.workspaceId ?? null) })
+  res.json({ teams: listTeams(root, userScope(user)) })
 })
 
 app.post("/api/teams", (req, res) => {
@@ -370,7 +380,7 @@ app.post("/api/teams", (req, res) => {
     const agentNames = Array.isArray(req.body?.agentNames)
       ? req.body.agentNames.filter((item: unknown): item is string => typeof item === "string")
       : []
-    const team = createTeam(root, user.workspaceId, {
+    const team = createTeam(root, writeScope(user), {
       name: typeof req.body?.name === "string" ? req.body.name : "",
       description: typeof req.body?.description === "string" ? req.body.description : undefined,
       agentNames,
@@ -387,7 +397,7 @@ app.post("/api/teams/:id", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   try {
     const user = requireUser(root, sessionId)
-    const team = updateTeam(root, user.workspaceId, String(req.params.id), {
+    const team = updateTeam(root, writeScope(user), String(req.params.id), {
       name: typeof req.body?.name === "string" ? req.body.name : undefined,
       description: typeof req.body?.description === "string" ? req.body.description : undefined,
       agentNames: Array.isArray(req.body?.agentNames)
@@ -406,7 +416,7 @@ app.delete("/api/teams/:id", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   try {
     const user = requireUser(root, sessionId)
-    deleteTeam(root, user.workspaceId, String(req.params.id))
+    deleteTeam(root, writeScope(user), String(req.params.id))
     res.json({ ok: true })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Delete team failed" })
@@ -428,11 +438,11 @@ app.post("/api/room/team", (req, res) => {
       res.status(404).json({ error: "Team not found" })
       return
     }
-    if (team.workspaceId && team.workspaceId !== user?.workspaceId) {
+    if (team.workspaceId && team.workspaceId !== userScope(user)) {
       res.status(403).json({ error: "Team not in your workspace" })
       return
     }
-    const swarm = resolveTeamAgents(root, user?.workspaceId ?? null, team.agentNames, team.approvalMap)
+    const swarm = resolveTeamAgents(root, userScope(user), team.agentNames, team.approvalMap)
     room.teamId = team.id
     room.stages = swarm.map((agent) => ({
       name: agent.name,
@@ -874,7 +884,7 @@ app.get("/api/dm", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const room = current()
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
-  const catalog = listCatalog(root, workspaceId).map((agent) => ({
+  const catalog = listCatalog(root, scopeFor(workspaceId, room.environmentId)).map((agent) => ({
     name: agent.name,
     title: agent.title,
     needsApproval: agent.needsApproval,
@@ -888,7 +898,7 @@ app.get("/api/dm/:agentName", (req, res) => {
   const room = current()
   const agentName = String(req.params.agentName || "")
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
-  const agent = findCatalogAgent(root, workspaceId, agentName)
+  const agent = findCatalogAgent(root, scopeFor(workspaceId, current().environmentId), agentName)
   if (!agent) {
     res.status(404).json({ error: "Unknown agent" })
     return
@@ -910,7 +920,7 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
   const room = current()
   const agentName = String(req.params.agentName || "")
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
-  const agent = findCatalogAgent(root, workspaceId, agentName)
+  const agent = findCatalogAgent(root, scopeFor(workspaceId, current().environmentId), agentName)
   if (!agent) {
     res.status(404).json({ error: "Unknown agent" })
     return
@@ -1486,7 +1496,7 @@ async function streamRun(
 function groupAgents(thread: GroupThread, sessionId: string): AgentFile[] {
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
   return thread.members.map((name) => {
-    const agent = findCatalogAgent(root, workspaceId, name)
+    const agent = findCatalogAgent(root, scopeFor(workspaceId, current().environmentId), name)
     if (!agent) throw new Error(`Group member ${name} is not in the agent catalog`)
     return agent
   })
@@ -1707,7 +1717,7 @@ async function loadSourcesForRole(
 /** A fresh sprint room inside an environment, made active. It starts with the environment's default repos. */
 function openNewRoom(environmentId: string, workspaceId: string | null, requirement: string | undefined): Room {
   const env = getEnvironment(root, environmentId)
-  const room = openRoom(roomAgents(null, workspaceId), requirement, environmentId)
+  const room = openRoom(roomAgents(null, workspaceId, environmentId), requirement, environmentId)
   room.teamId = ensureDefaultTeam(root).id
   room.gitRepos = (env?.gitRepos ?? []).map((repo) => ({ ...repo, id: crypto.randomUUID() }))
   room.slot = newSlot()
@@ -1755,10 +1765,10 @@ function present(room: Room) {
   }
 }
 
-function roomAgents(room: Room | null, workspaceId: string | null) {
+function roomAgents(room: Room | null, workspaceId: string | null, environmentId: string | null = room?.environmentId ?? null) {
   const team =
     (room?.teamId && getTeam(root, room.teamId)) || ensureDefaultTeam(root)
-  return resolveTeamAgents(root, workspaceId, team.agentNames, team.approvalMap)
+  return resolveTeamAgents(root, scopeFor(workspaceId, environmentId), team.agentNames, team.approvalMap)
 }
 
 function finishedStageOutputs(room: Room): { title: string; output: string }[] {
