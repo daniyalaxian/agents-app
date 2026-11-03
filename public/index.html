@@ -154,6 +154,18 @@
           <div class="tab-panel" data-panel="team" hidden>
             <p class="lead">Which agents work on this sprint. The default team covers the whole SDLC. Sign in to save your own.</p>
             <ul id="teams-list" class="memory-list"></ul>
+            <section id="builder" class="source-form card">
+              <h3>Automation builder</h3>
+              <p class="lead">Add agents, drag them where you like, and join them in order. Click <b>●</b> on one agent, then on the next, to connect them. Tick <b>OK</b> to pause for approval after that agent.</p>
+              <label class="field"><span>Name</span><input id="builder-name" placeholder="QA-only automation" /></label>
+              <div id="builder-palette" class="builder-palette"></div>
+              <div id="builder-canvas" class="builder-canvas"><svg id="builder-edges" class="builder-edges"></svg></div>
+              <div class="ask-actions">
+                <button id="builder-save" type="button">Save automation</button>
+                <button id="builder-clear" type="button" class="ghost">Clear</button>
+              </div>
+              <p id="builder-preview" class="source-preview"></p>
+            </section>
             <form id="team-create" class="source-form card">
               <h3>New team</h3>
               <label class="field"><span>Name</span><input id="team-name" placeholder="QA-only team" /></label>

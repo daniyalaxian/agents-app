@@ -299,7 +299,8 @@ async function reloadAfterSwitch(room) {
   const group = await fetch("/api/group").then((response) => response.json())
   render(room || (await fetch("/api/room").then((response) => response.json())))
   if (!group.error) renderGroup(group)
-  await Promise.all([loadEnvironments(), loadCatalog(), loadTeams(), loadAgentCatalog()])
+  await Promise.all([loadEnvironments(), loadCatalog(), loadTeams(), loadAgentCatalog(), loadBuilderPalette()])
+  builderReset(null, null, "")
   const started = Boolean(lastRoom.confluencePageUrl || lastRoom.pastedBrd || group.thread?.messages?.length)
   if (started) showView("kickoff")
   else showView("wizard", { step: 1 })
@@ -1142,20 +1143,187 @@ teamCreate.addEventListener("submit", async (event) => {
   await loadTeams()
 })
 
+// ---------- Automation builder ----------
+
+const NODE_W = 170
+const NODE_H = 70
+const builder = { nodes: [], edges: [], editingId: null, connectFrom: null, agents: [] }
+const builderCanvas = $("#builder-canvas")
+const builderEdges = $("#builder-edges")
+const builderPreview = $("#builder-preview")
+
+function builderSay(text, isError) {
+  builderPreview.classList.toggle("error", Boolean(isError))
+  builderPreview.textContent = text
+}
+
+function builderReset(graph, teamId, name) {
+  builder.nodes = graph ? graph.nodes.map((node) => ({ ...node })) : []
+  builder.edges = graph ? graph.edges.map((edge) => ({ ...edge })) : []
+  builder.editingId = teamId || null
+  builder.connectFrom = null
+  $("#builder-name").value = name || ""
+  builderSay("")
+  renderBuilder()
+}
+
+function renderBuilder() {
+  for (const el of builderCanvas.querySelectorAll(".bnode")) el.remove()
+  for (const node of builder.nodes) {
+    const el = document.createElement("div")
+    el.className = "bnode" + (builder.connectFrom === node.id ? " connecting" : "")
+    el.dataset.id = node.id
+    el.style.left = node.x + "px"
+    el.style.top = node.y + "px"
+    const agent = builder.agents.find((item) => item.name === node.agent)
+    el.innerHTML =
+      `<div class="bn-row"><strong>${escape(agent?.title || node.agent)}</strong><button type="button" data-del title="Remove">×</button></div>` +
+      `<div class="bn-row"><label><input type="checkbox" data-ok ${node.approval ? "checked" : ""} /> OK</label><button type="button" data-link title="Connect to the next agent">●</button></div>`
+    builderCanvas.append(el)
+  }
+  drawBuilderEdges()
+}
+
+function drawBuilderEdges() {
+  const find = (id) => builder.nodes.find((node) => node.id === id)
+  builderEdges.innerHTML = builder.edges
+    .map((edge, index) => {
+      const a = find(edge.from)
+      const b = find(edge.to)
+      if (!a || !b) return ""
+      return `<line data-edge="${index}" x1="${a.x + NODE_W}" y1="${a.y + NODE_H / 2}" x2="${b.x}" y2="${b.y + NODE_H / 2}"><title>Click to remove</title></line>`
+    })
+    .join("")
+}
+
+function builderTail() {
+  const withNext = new Set(builder.edges.map((edge) => edge.from))
+  return builder.nodes.find((node) => !withNext.has(node.id))
+}
+
+function builderAdd(agentName) {
+  if (builder.nodes.some((node) => node.agent === agentName)) return builderSay("That agent is already in the automation.", true)
+  const tail = builderTail()
+  const id = "n" + (Math.max(0, ...builder.nodes.map((node) => Number(node.id.slice(1)) || 0)) + 1)
+  const agent = builder.agents.find((item) => item.name === agentName)
+  builder.nodes.push({ id, agent: agentName, approval: Boolean(agent?.needsApproval), x: tail ? tail.x + 220 : 40, y: tail ? tail.y : 60 })
+  if (tail) builder.edges.push({ from: tail.id, to: id })
+  builderSay("")
+  renderBuilder()
+}
+
+async function loadBuilderPalette() {
+  const payload = await fetch("/api/catalog").then((response) => response.json()).catch(() => ({}))
+  builder.agents = payload.agents || []
+  $("#builder-palette").innerHTML = builder.agents
+    .map((agent) => `<button type="button" class="ghost small" data-add-agent="${escape(agent.name)}">+ ${escape(agent.title)}</button>`)
+    .join("")
+  renderBuilder()
+}
+
+$("#builder-palette").addEventListener("click", (event) => {
+  const add = event.target.closest("[data-add-agent]")
+  if (add) builderAdd(add.getAttribute("data-add-agent"))
+})
+
+builderEdges.addEventListener("click", (event) => {
+  const line = event.target.closest("[data-edge]")
+  if (!line) return
+  builder.edges.splice(Number(line.getAttribute("data-edge")), 1)
+  drawBuilderEdges()
+})
+
+builderCanvas.addEventListener("click", (event) => {
+  const el = event.target.closest(".bnode")
+  if (!el) return
+  const id = el.dataset.id
+  if (event.target.closest("[data-del]")) {
+    builder.nodes = builder.nodes.filter((node) => node.id !== id)
+    builder.edges = builder.edges.filter((edge) => edge.from !== id && edge.to !== id)
+    return renderBuilder()
+  }
+  if (event.target.closest("[data-link]")) {
+    builder.connectFrom = builder.connectFrom === id ? null : id
+    return renderBuilder()
+  }
+  if (builder.connectFrom && builder.connectFrom !== id) {
+    builder.edges = builder.edges.filter((edge) => edge.from !== builder.connectFrom)
+    builder.edges.push({ from: builder.connectFrom, to: id })
+    builder.connectFrom = null
+    renderBuilder()
+  }
+})
+
+builderCanvas.addEventListener("change", (event) => {
+  const box = event.target.closest("[data-ok]")
+  const el = event.target.closest(".bnode")
+  if (!box || !el) return
+  const node = builder.nodes.find((item) => item.id === el.dataset.id)
+  if (node) node.approval = box.checked
+})
+
+builderCanvas.addEventListener("pointerdown", (event) => {
+  const el = event.target.closest(".bnode")
+  if (!el || event.target.closest("button, input, label")) return
+  const node = builder.nodes.find((item) => item.id === el.dataset.id)
+  if (!node) return
+  const startX = event.clientX - node.x
+  const startY = event.clientY - node.y
+  el.setPointerCapture(event.pointerId)
+  const move = (e) => {
+    node.x = Math.max(0, Math.round(e.clientX - startX))
+    node.y = Math.max(0, Math.round(e.clientY - startY))
+    el.style.left = node.x + "px"
+    el.style.top = node.y + "px"
+    drawBuilderEdges()
+  }
+  const up = () => {
+    el.removeEventListener("pointermove", move)
+    el.removeEventListener("pointerup", up)
+  }
+  el.addEventListener("pointermove", move)
+  el.addEventListener("pointerup", up)
+})
+
+$("#builder-clear").addEventListener("click", () => builderReset(null, null, ""))
+
+$("#builder-save").addEventListener("click", async () => {
+  if (!session?.user) return builderSay("Sign in to save automations.", true)
+  const body = { name: $("#builder-name").value, graph: { nodes: builder.nodes, edges: builder.edges } }
+  const payload = builder.editingId
+    ? await fetchJson("/api/teams/" + encodeURIComponent(builder.editingId), body)
+    : await fetchJson("/api/teams", body)
+  if (payload.error) return builderSay(payload.error, true)
+  builder.editingId = payload.team.id
+  builderSay("Saved " + payload.team.name)
+  await loadTeams()
+})
+
 async function loadTeams() {
   const payload = await fetch("/api/teams").then((response) => response.json())
   const activeId = lastRoom?.teamId
   teamsList.innerHTML = (payload.teams || [])
     .map(
-      (team) => `<li class="card">
+      (team) => `<li class="card" data-team="${escape(team.id)}">
         <div class="mem-kind">${team.isDefault ? "Default" : "Your team"}${team.id === activeId ? " · in use" : ""}</div>
         <strong>${escape(team.name)}</strong>
         <div class="lead">${escape((team.agentNames || []).join(" → "))}</div>
-        ${team.id === activeId ? "" : `<div class="ask-actions"><button type="button" class="ghost small" data-use-team="${escape(team.id)}">Use this team</button></div>`}
+        <div class="ask-actions">${team.id === activeId ? "" : `<button type="button" class="ghost small" data-use-team="${escape(team.id)}">Use this team</button>`}${team.isDefault ? "" : `<button type="button" class="ghost small" data-edit-team="${escape(team.id)}">Edit in builder</button>`}</div>
       </li>`,
     )
     .join("")
+  teamsById = Object.fromEntries((payload.teams || []).map((team) => [team.id, team]))
 }
+
+let teamsById = {}
+teamsList.addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-edit-team]")
+  if (!edit) return
+  const team = teamsById[edit.getAttribute("data-edit-team")]
+  if (!team) return
+  builderReset(team.graph, team.id, team.name)
+  $("#builder").scrollIntoView({ block: "start" })
+})
 
 $("#toolkit-import").addEventListener("submit", async (event) => {
   event.preventDefault()
@@ -1547,6 +1715,7 @@ async function boot() {
     loadSession(),
     loadAgentCatalog(),
     loadEnvironments(),
+    loadBuilderPalette(),
   ])
   render(room)
   if (!group.error) renderGroup(group)

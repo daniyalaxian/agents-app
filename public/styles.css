@@ -1208,3 +1208,14 @@ details summary {
   font-size: 11px;
   margin-left: auto;
 }
+
+.builder-palette { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.builder-canvas { position: relative; height: 280px; overflow: auto; border: 1px dashed var(--line); border-radius: 10px; }
+.builder-edges { position: absolute; left: 0; top: 0; width: 1600px; height: 600px; pointer-events: none; }
+.builder-edges line { stroke: var(--muted); stroke-width: 2; pointer-events: stroke; cursor: pointer; }
+.builder-edges line:hover { stroke: #c0392b; }
+.bnode { position: absolute; width: 170px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel, #fff); font-size: 12px; cursor: grab; user-select: none; touch-action: none; }
+.bnode.connecting { outline: 2px solid var(--accent, #3b6ef5); }
+.bnode strong { display: block; margin-bottom: 4px; }
+.bnode .bn-row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.bnode button { border: 0; background: transparent; cursor: pointer; color: var(--muted); padding: 0 4px; }
