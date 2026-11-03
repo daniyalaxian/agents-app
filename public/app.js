@@ -260,6 +260,97 @@ $("#new-sprint").addEventListener("click", async () => {
   requirementText.value = ""
   showView("wizard", { step: 1 })
 })
+// ---------- Environments and rooms ----------
+
+const envSelect = $("#env-select")
+const roomList = $("#room-list")
+let envState = null
+let browsedEnvId = null
+
+const ROOM_STATE = { new: "New", running: "Working", waiting: "Needs your OK", error: "Problem", done: "Done" }
+
+async function loadEnvironments() {
+  const payload = await fetch("/api/environments").then((response) => response.json()).catch(() => null)
+  if (!payload || payload.error) return
+  envState = payload
+  if (!browsedEnvId || !payload.environments.some((env) => env.id === browsedEnvId)) browsedEnvId = payload.activeEnvironmentId
+  renderEnvironments()
+}
+
+function renderEnvironments() {
+  if (!envState) return
+  envSelect.innerHTML = envState.environments
+    .map((env) => `<option value="${escape(env.id)}">${escape(env.name)} (${env.roomCount})</option>`)
+    .join("")
+  envSelect.value = browsedEnvId
+  const rooms = envState.rooms.filter((item) => item.environmentId === browsedEnvId)
+  roomList.innerHTML = rooms.length
+    ? rooms
+        .map(
+          (item) =>
+            `<li><button type="button" class="side-item${item.slot === envState.activeSlot ? " current" : ""}" data-slot="${escape(item.slot)}" title="${escape(item.requirement || "")}"><span class="side-text">${escape(shorten(item.requirement || "New sprint", 34))}</span><span class="faint">${escape(ROOM_STATE[item.state] || "")}</span></button></li>`,
+        )
+        .join("")
+    : `<li class="faint" style="padding:4px 10px;font-size:12px">No rooms yet</li>`
+}
+
+/** Reloads everything the screen shows for the room that is now open. */
+async function reloadAfterSwitch(room) {
+  const group = await fetch("/api/group").then((response) => response.json())
+  render(room || (await fetch("/api/room").then((response) => response.json())))
+  if (!group.error) renderGroup(group)
+  await loadEnvironments()
+  const started = Boolean(lastRoom.confluencePageUrl || lastRoom.pastedBrd || group.thread?.messages?.length)
+  if (started) showView("kickoff")
+  else showView("wizard", { step: 1 })
+}
+
+function guardSwitch() {
+  if (!busyAnywhere()) return true
+  window.alert("Wait until the agents finish talking.")
+  return false
+}
+
+envSelect.addEventListener("change", () => {
+  browsedEnvId = envSelect.value
+  renderEnvironments()
+})
+
+roomList.addEventListener("click", async (event) => {
+  const item = event.target.closest("[data-slot]")
+  if (!item || !guardSwitch()) return
+  const result = await fetchJson(`/api/rooms/${encodeURIComponent(item.getAttribute("data-slot"))}/open`, {})
+  if (result.error) return window.alert(result.error)
+  setSidebarOpen(false)
+  await reloadAfterSwitch(result)
+})
+
+$("#new-room").addEventListener("click", async () => {
+  if (!guardSwitch()) return
+  const result = await fetchJson(`/api/environments/${encodeURIComponent(browsedEnvId)}/rooms`, {})
+  if (result.error) return window.alert(result.error)
+  setSidebarOpen(false)
+  await reloadAfterSwitch()
+})
+
+$("#new-env").addEventListener("click", async () => {
+  if (!guardSwitch()) return
+  const name = window.prompt("Name for the new environment (a client or program):")
+  if (!name || !name.trim()) return
+  const result = await fetchJson("/api/environments", { name })
+  if (result.error) return window.alert(result.error)
+  browsedEnvId = result.activeEnvironmentId
+  setSidebarOpen(false)
+  await reloadAfterSwitch()
+})
+
+$("#env-repos").addEventListener("click", async () => {
+  const result = await fetchJson(`/api/environments/${encodeURIComponent(browsedEnvId)}/repos-from-room`, {})
+  if (result.error) return window.alert(result.error)
+  envState = result
+  window.alert("Saved. New rooms in this environment start with these repos.")
+})
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") setSidebarOpen(false)
 })
@@ -1455,6 +1546,7 @@ async function boot() {
     fetch("/api/group").then((response) => response.json()),
     loadSession(),
     loadAgentCatalog(),
+    loadEnvironments(),
   ])
   render(room)
   if (!group.error) renderGroup(group)

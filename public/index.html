@@ -24,6 +24,15 @@
           <button id="edit-setup" class="side-link" type="button">Edit setup</button>
         </div>
 
+        <p class="side-heading">Environment</p>
+        <select id="env-select" class="env-select" aria-label="Environment"></select>
+        <ul id="room-list" class="room-list" aria-label="Sprint rooms"></ul>
+        <div class="side-actions">
+          <button id="new-room" class="side-link" type="button">+ New room</button>
+          <button id="new-env" class="side-link" type="button">+ New environment</button>
+          <button id="env-repos" class="side-link" type="button" title="New rooms in this environment start with this room's repos">Save repos as default</button>
+        </div>
+
         <p class="side-heading">Steps</p>
         <button class="side-item" type="button" data-view="kickoff">
           <span class="step-num">1</span><span class="side-text">Kickoff</span><span id="kickoff-dot" class="dot"></span>
