@@ -68,12 +68,14 @@ export function newGroup(roomId: string, members = DEFAULT_MEMBERS): GroupThread
   }
 }
 
-export function readGroup(root: string, roomId: string): GroupThread {
+/** `members` is who the team wants in the discussion. An existing thread keeps its own once anyone has spoken. */
+export function readGroup(root: string, roomId: string, members: string[] = DEFAULT_MEMBERS): GroupThread {
   const file = groupPath(root, roomId)
-  if (!fs.existsSync(file)) return newGroup(roomId)
+  if (!fs.existsSync(file)) return newGroup(roomId, members)
   try {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as GroupThread
-    const thread = { ...newGroup(roomId, raw.members?.length ? raw.members : DEFAULT_MEMBERS), ...raw }
+    const thread = { ...newGroup(roomId, raw.members?.length ? raw.members : members), ...raw }
+    if (!thread.messages.length) thread.members = [...members] // not started: follow the team's current choice
     // A turn cannot survive a server restart.
     if (thread.status === "running") {
       thread.status = "waiting"
@@ -81,7 +83,7 @@ export function readGroup(root: string, roomId: string): GroupThread {
     }
     return thread
   } catch {
-    return newGroup(roomId)
+    return newGroup(roomId, members)
   }
 }
 

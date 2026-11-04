@@ -130,6 +130,7 @@ import {
   groupContext,
   handoffStages,
   newGroup,
+  DEFAULT_MEMBERS,
   readGroup,
   runGroup,
   writeGroup,
@@ -1067,7 +1068,7 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
 app.get("/api/group", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const room = current()
-  const thread = liveGroup?.thread ?? readGroup(root, room.id)
+  const thread = liveGroup?.thread ?? readGroup(root, room.id, kickoffMembers(room))
   res.json(presentGroup(thread, groupAgents(thread, sessionId)))
 })
 
@@ -1090,7 +1091,11 @@ app.post("/api/group/message", async (req, res) => {
     return
   }
   const room = current()
-  const thread = readGroup(root, room.id)
+  const thread = readGroup(root, room.id, kickoffMembers(room))
+  if (!thread.members.length) {
+    res.status(409).json({ error: "This team has no kickoff discussion. Tick Discuss on two or more agents in the builder." })
+    return
+  }
   const agents = groupAgents(thread, sessionId)
   if (body) addHumanMessage(thread, body, agents)
   await streamGroup(res, sessionId, room, thread, agents)
@@ -1104,7 +1109,7 @@ app.post("/api/group/handoff", async (req, res) => {
     return
   }
   const room = current()
-  const thread = readGroup(root, room.id)
+  const thread = readGroup(root, room.id, kickoffMembers(room))
   if (!thread.messages.some((message) => message.kind === "agent")) {
     res.status(409).json({ error: "Run the kickoff discussion first" })
     return
@@ -1129,7 +1134,7 @@ app.post("/api/group/reset", (req, res) => {
     res.status(409).json({ error: "Pause the group before starting over" })
     return
   }
-  const thread = newGroup(current().id)
+  const thread = newGroup(current().id, kickoffMembers(current()))
   writeGroup(root, thread)
   res.json(presentGroup(thread, groupAgents(thread, sessionId)))
 })
@@ -1532,6 +1537,13 @@ async function streamRun(
     busy = false
     res.end()
   }
+}
+
+/** Who holds this room's kickoff discussion: the team's chosen agents, else the SDLC trio when the team has them. */
+function kickoffMembers(room: Room): string[] {
+  const team = (room.teamId && getTeam(root, room.teamId)) || ensureDefaultTeam(root)
+  if (team.swarmNames?.length) return team.swarmNames
+  return DEFAULT_MEMBERS.filter((name) => team.agentNames.includes(name))
 }
 
 function groupAgents(thread: GroupThread, sessionId: string): AgentFile[] {

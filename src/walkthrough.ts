@@ -8,7 +8,7 @@ import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, s
 import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from "./environments.js"
 import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
-import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, parseTurnTag, resolveAlias, runGroup } from "./group.js"
+import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, readGroup, writeGroup, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { compileGraph, linearGraph, parseGraph } from "./graph.js"
 import { createTeam, teamGraph, updateTeam } from "./teams.js"
@@ -436,6 +436,28 @@ const flat = createTeam(teamRoot, "ws-a", { name: "List team", agentNames: names
 assert(teamGraph(flat).edges.length === 1, "a plain list team shows as a chain")
 const edited = updateTeam(teamRoot, "ws-a", made.id, { agentNames: names.slice(0, 2) })
 assert(!edited.graph && edited.agentNames.length === 2, "editing the list drops a stale canvas")
+// A team chooses who holds the kickoff discussion (swarm node).
+const withSwarm = (flags: boolean[]) => {
+  const graph = linearGraph(["sa", "coding", "devops"])
+  graph.nodes.forEach((node, index) => (node.swarm = flags[index]))
+  return graph
+}
+assert(compileGraph(withSwarm([true, true, false])).swarmNames.join() === "sa,coding", "discussion members are compiled from the chain")
+assert(compileGraph(withSwarm([false, false, false])).swarmNames.length === 0, "no discussion is allowed")
+const swarmError = (flags: boolean[]) => graphError(withSwarm(flags))
+assert(swarmError([true, false, false]).includes("at least two"), "a discussion of one is refused")
+assert(swarmError([true, false, true]).includes("come first"), "discussion members must lead the chain")
+const swarmTeam = createTeam(teamRoot, "ws-a", { name: "Talk first", agentNames: [], graph: withSwarm([true, true, false]) })
+assert(swarmTeam.swarmNames?.join() === "sa,coding", "the team stores its discussion members")
+assert(updateTeam(teamRoot, "ws-a", swarmTeam.id, { agentNames: ["sa", "coding"] }).swarmNames === undefined, "editing the list clears stale members")
+assert(readGroup(teamRoot, "no-thread-yet", ["sa", "coding"]).members.join() === "sa,coding", "a new thread uses the team's members")
+const started = readGroup(teamRoot, "started-room", ["sa", "coding"])
+started.messages.push({ id: "m1", speaker: "sa", kind: "agent", body: "hi", at: new Date().toISOString() } as never)
+writeGroup(teamRoot, started)
+assert(readGroup(teamRoot, "started-room", ["devops", "deploy"]).members.join() === "sa,coding", "a started thread keeps its members")
+const unstarted = readGroup(teamRoot, "idle-room", ["sa", "coding"])
+writeGroup(teamRoot, unstarted)
+assert(readGroup(teamRoot, "idle-room", ["devops", "deploy"]).members.join() === "devops,deploy", "an unstarted thread follows a changed team")
 fs.rmSync(teamRoot, { recursive: true, force: true })
 
 // Help checklist: tells the person exactly what to enter in each console, and never carries a secret.

@@ -554,7 +554,7 @@ function renderGroupControls(running, started) {
   groupInput.placeholder = running
     ? "Jump in. Your message is read before the next turn."
     : started
-      ? "Reply, ask @sa, @lead or @qa, or press Send to let them continue."
+      ? "Reply, ask a member with @name, or press Send to let them continue."
       : "Optional: give the team a first instruction."
   groupPause.hidden = !running
   groupPause.disabled = false
@@ -1146,7 +1146,7 @@ teamCreate.addEventListener("submit", async (event) => {
 
 // ---------- Automation builder ----------
 
-const NODE_W = 170
+const NODE_W = 200
 const NODE_H = 70
 const builder = { nodes: [], edges: [], editingId: null, connectFrom: null, agents: [] }
 const builderCanvas = $("#builder-canvas")
@@ -1179,7 +1179,7 @@ function renderBuilder() {
     const agent = builder.agents.find((item) => item.name === node.agent)
     el.innerHTML =
       `<div class="bn-row"><strong>${escape(agent?.title || node.agent)}</strong><button type="button" data-del title="Remove">×</button></div>` +
-      `<div class="bn-row"><label><input type="checkbox" data-ok ${node.approval ? "checked" : ""} /> OK</label><button type="button" data-link title="Connect to the next agent">●</button></div>`
+      `<div class="bn-row"><label title="Pause for your OK after this agent"><input type="checkbox" data-ok ${node.approval ? "checked" : ""} /> OK</label><label title="Takes part in the kickoff discussion"><input type="checkbox" data-swarm ${node.swarm ? "checked" : ""} /> Discuss</label><button type="button" data-link title="Connect to the next agent">●</button></div>`
     builderCanvas.append(el)
   }
   drawBuilderEdges()
@@ -1207,7 +1207,7 @@ function builderAdd(agentName) {
   const tail = builderTail()
   const id = "n" + (Math.max(0, ...builder.nodes.map((node) => Number(node.id.slice(1)) || 0)) + 1)
   const agent = builder.agents.find((item) => item.name === agentName)
-  builder.nodes.push({ id, agent: agentName, approval: Boolean(agent?.needsApproval), x: tail ? tail.x + 220 : 40, y: tail ? tail.y : 60 })
+  builder.nodes.push({ id, agent: agentName, approval: Boolean(agent?.needsApproval), x: tail ? tail.x + 240 : 40, y: tail ? tail.y : 60 })
   if (tail) builder.edges.push({ from: tail.id, to: id })
   builderSay("")
   renderBuilder()
@@ -1256,11 +1256,13 @@ builderCanvas.addEventListener("click", (event) => {
 })
 
 builderCanvas.addEventListener("change", (event) => {
-  const box = event.target.closest("[data-ok]")
+  const box = event.target.closest("[data-ok], [data-swarm]")
   const el = event.target.closest(".bnode")
   if (!box || !el) return
   const node = builder.nodes.find((item) => item.id === el.dataset.id)
-  if (node) node.approval = box.checked
+  if (!node) return
+  if (box.hasAttribute("data-swarm")) node.swarm = box.checked
+  else node.approval = box.checked
 })
 
 builderCanvas.addEventListener("pointerdown", (event) => {

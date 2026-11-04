@@ -10,6 +10,8 @@ export type GraphNode = {
   agent: string
   /** Pause for the person's OK after this agent finishes. */
   approval: boolean
+  /** Joins the kickoff discussion (a group chat) instead of running alone. */
+  swarm?: boolean
   x: number
   y: number
 }
@@ -46,6 +48,7 @@ export function parseGraph(value: unknown): AutomationGraph {
       id,
       agent,
       approval: item.approval === true,
+      swarm: item.swarm === true,
       x: Number.isFinite(item.x) ? Number(item.x) : 0,
       y: Number.isFinite(item.y) ? Number(item.y) : 0,
     }
@@ -62,7 +65,11 @@ export function parseGraph(value: unknown): AutomationGraph {
  * Rules: at least one node, unique node ids, one node per agent, edges only between known nodes, no loops,
  * and a single straight chain (each node has at most one way in and one way out).
  */
-export function compileGraph(graph: AutomationGraph): { agentNames: string[]; approvalMap: Record<string, boolean> } {
+export function compileGraph(graph: AutomationGraph): {
+  agentNames: string[]
+  approvalMap: Record<string, boolean>
+  swarmNames: string[]
+} {
   const { nodes, edges } = graph
   if (!nodes.length) throw new Error("Add at least one agent to the automation")
   const byId = new Map<string, GraphNode>()
@@ -100,7 +107,15 @@ export function compileGraph(graph: AutomationGraph): { agentNames: string[]; ap
   }
   if (order.length !== nodes.length) throw new Error("Connect every agent into one chain")
 
+  // The discussion hands off to the agents after it, so its members must be the first ones in the chain.
+  const swarmNames = order.filter((node) => node.swarm).map((node) => node.agent)
+  if (swarmNames.length === 1) throw new Error("A discussion needs at least two agents. Mark another, or untick this one.")
+  if (swarmNames.length > 1 && !order.slice(0, swarmNames.length).every((node) => node.swarm)) {
+    throw new Error("Agents in the discussion must come first in the chain, one after another.")
+  }
+
   return {
+    swarmNames,
     agentNames: order.map((node) => node.agent),
     approvalMap: Object.fromEntries(order.map((node) => [node.agent, node.approval])),
   }

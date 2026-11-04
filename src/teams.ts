@@ -14,6 +14,8 @@ export type TeamRecord = {
   approvalMap: Record<string, boolean>
   /** The canvas layout. When present, agentNames and approvalMap are compiled from it. */
   graph?: AutomationGraph
+  /** Agents that hold the kickoff discussion together. Empty or missing: the built-in SDLC trio, if the team has them. */
+  swarmNames?: string[]
   isDefault: boolean
   createdAt: string
   updatedAt: string
@@ -88,12 +90,13 @@ export function createTeam(
     agentNames: string[]
     approvalMap?: Record<string, boolean>
     graph?: AutomationGraph
+    swarmNames?: string[]
   },
 ): TeamRecord {
   if (!input.name.trim()) throw new Error("Team name required")
   if (input.graph) {
     const compiled = compileGraph(input.graph)
-    input = { ...input, agentNames: compiled.agentNames, approvalMap: compiled.approvalMap }
+    input = { ...input, agentNames: compiled.agentNames, approvalMap: compiled.approvalMap, swarmNames: compiled.swarmNames }
   }
   if (!input.agentNames?.length) throw new Error("Pick at least one agent")
 
@@ -106,6 +109,7 @@ export function createTeam(
     agentNames: input.agentNames,
     approvalMap: input.approvalMap || {},
     ...(input.graph ? { graph: input.graph } : {}),
+    ...(input.swarmNames?.length ? { swarmNames: input.swarmNames } : {}),
     isDefault: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -132,11 +136,14 @@ export function updateTeam(
     team.graph = patch.graph
     team.agentNames = compiled.agentNames
     team.approvalMap = compiled.approvalMap
+    if (compiled.swarmNames.length) team.swarmNames = compiled.swarmNames
+    else delete team.swarmNames
   } else {
     if (patch.agentNames !== undefined) {
       if (!patch.agentNames.length) throw new Error("Pick at least one agent")
       team.agentNames = patch.agentNames
       delete team.graph // the list changed, so the old canvas no longer matches
+      delete team.swarmNames
     }
     if (patch.approvalMap !== undefined) {
       team.approvalMap = patch.approvalMap
