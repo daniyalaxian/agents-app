@@ -230,6 +230,16 @@ function recall(key) {
   }
 }
 
+// Jump to a block inside Settings → Team & agents (import, create, builder).
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-goto]")
+  if (!link) return
+  event.preventDefault()
+  showView("settings", { tab: "team" })
+  setSidebarOpen(false)
+  const target = document.getElementById(link.getAttribute("data-goto"))
+  if (target) setTimeout(() => target.scrollIntoView({ block: "start", behavior: "smooth" }), 80)
+})
 sidebar.addEventListener("click", (event) => {
   const item = event.target.closest("[data-view]")
   if (item) showView(item.getAttribute("data-view"))
@@ -646,9 +656,10 @@ function render(room) {
     `<div class="chip ${handedOff ? "done" : "pending"}"><span class="title">Kickoff</span><span class="state">${handedOff ? "Done" : "In progress"}</span></div>`,
     ...stages.map(
       (stage) =>
-        `<div class="chip ${stage.status}"><span class="title">${escape(stage.title)}</span><span class="state">${label(stage.status)}</span></div>`,
+        `<div class="chip ${stage.status}"><span class="title">${escape(stage.title)}</span><span class="state">${label(stage.status)}</span>${usageLine(stage.usage)}</div>`,
     ),
   ].join("")
+  renderRunUsage(stages)
 
   const kickoffTitles = new Set(room.stages.filter((stage) => kickoffMembers.includes(stage.name)).map((stage) => stage.title))
   const buildMessages = room.messages.filter((message) => !(message.kind === "agent" && kickoffTitles.has(message.title)))

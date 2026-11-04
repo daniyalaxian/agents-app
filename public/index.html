@@ -34,6 +34,17 @@
           <button id="env-repos" class="side-link" type="button" title="New rooms in this environment start with this room's repos">Save repos as default</button>
         </div>
 
+        <p class="side-heading">Agents &amp; workflows</p>
+        <button class="side-item" type="button" data-goto="toolkit-import">
+          <span class="step-num" aria-hidden="true">⇩</span><span class="side-text">Import agents</span>
+        </button>
+        <button class="side-item" type="button" data-goto="agent-paste">
+          <span class="step-num" aria-hidden="true">+</span><span class="side-text">Create an agent</span>
+        </button>
+        <button class="side-item" type="button" data-goto="builder">
+          <span class="step-num" aria-hidden="true">▦</span><span class="side-text">Build a workflow</span>
+        </button>
+
         <p class="side-heading">Steps</p>
         <button class="side-item" type="button" data-view="kickoff">
           <span class="step-num">1</span><span class="side-text">Kickoff</span><span id="kickoff-dot" class="dot"></span>
@@ -109,6 +120,7 @@
 
         <section id="view-build" class="view chat-view" hidden>
           <div id="chips" class="chips" aria-label="Build steps"></div>
+          <p id="run-usage" class="run-usage" hidden></p>
           <div class="thread">
             <div id="permissions" class="permissions" hidden>
               <h2>Waiting for your OK</h2>
@@ -215,7 +227,7 @@
               <li><b>Check the setup</b> below. Draft mode (no model key) works for a dry run; add a Cursor key for real answers.</li>
               <li><b>Sign in</b> under Account so your agents, automations and environments are saved.</li>
               <li><b>Create an environment</b> for the client or program (sidebar → + New environment). Each environment keeps its own rooms, agents and memory.</li>
-              <li><b>Bring in agents.</b> Import the Axian Squad under Team &amp; agents, or copy a built-in agent and edit it. Arrange them in the Automation builder.</li>
+              <li><b>Bring in agents.</b> <a href="#" data-goto="toolkit-import">Import the Axian Squad</a>, <a href="#" data-goto="agent-paste">create an agent</a> from markdown, then <a href="#" data-goto="builder">build a workflow</a> from them.</li>
               <li><b>Connect sources</b> (Confluence, Figma, GitHub) in Sprint sources, paste the requirement, and start the kickoff.</li>
               <li><b>Approve as you go.</b> Agents pause for your OK between steps, and every write to Jira, Confluence, Figma, GitHub or Jenkins waits for you to press Allow.</li>
             </ol>
