@@ -182,6 +182,13 @@
               <p id="toolkit-preview" class="source-preview"></p>
             </form>
             <h3 class="section-title">Agents</h3>
+            <form id="agent-paste" class="source-form card">
+              <h3>Create an agent from markdown</h3>
+              <p class="lead">Paste the instructions. A <code># Title</code> line is enough. Front matter (name, title, tools, needs_approval) and a <code>## Draft</code> section are optional.</p>
+              <label class="field"><span>Markdown</span><textarea id="agent-paste-text" rows="8" placeholder="# Release notes writer&#10;&#10;Read the merged pull requests and write release notes."></textarea></label>
+              <button type="submit">Create agent</button>
+              <p id="agent-paste-preview" class="source-preview"></p>
+            </form>
             <ul id="catalog-list" class="memory-list"></ul>
             <form id="catalog-edit" class="source-form card" hidden>
               <h3 id="catalog-edit-title">Edit agent</h3>

@@ -1387,6 +1387,25 @@ $("#toolkit-import").addEventListener("submit", async (event) => {
   await loadTeams()
 })
 
+$("#agent-paste").addEventListener("submit", async (event) => {
+  event.preventDefault()
+  const preview = $("#agent-paste-preview")
+  preview.classList.remove("error")
+  if (!session?.user) {
+    preview.classList.add("error")
+    preview.textContent = "Sign in to create agents."
+    return
+  }
+  const payload = await fetchJson("/api/catalog/create", { markdown: $("#agent-paste-text").value })
+  if (payload.error) {
+    preview.classList.add("error")
+    preview.textContent = payload.error
+    return
+  }
+  preview.textContent = `Created ${payload.agent.title} (${payload.agent.name}).` + (payload.notes.length ? " " + payload.notes.join(" ") : "")
+  $("#agent-paste-text").value = ""
+  await Promise.all([loadCatalog(), loadBuilderPalette()])
+})
 catalogList.addEventListener("click", async (event) => {
   const dup = event.target.closest("[data-duplicate]")
   const edit = event.target.closest("[data-edit-catalog]")

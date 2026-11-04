@@ -103,6 +103,88 @@ export function duplicateAgent(
   return findCatalogAgent(root, workspaceId, name)!
 }
 
+export type CreateResult = { agent: CatalogAgent; notes: string[] }
+
+const MAX_PASTE = 100_000
+const SOURCE_NAMES = new Set(["brd", "figma", "repos", "deploy"])
+
+/**
+ * Creates a custom agent from pasted markdown. Forgiving on purpose: front matter and a Draft section are optional and
+ * filled in when missing. Only name, title, tools, needs_approval and sources are read from front matter; kit_dirs and
+ * toolkit are import-only (they point at folders on this computer), so a paste cannot set them.
+ * Write tools always force needs_approval. `notes` says what was filled in or changed, so the person is never surprised.
+ */
+export function createAgentFromMarkdown(
+  root: string,
+  workspaceId: string,
+  markdown: string,
+  hint?: { name?: string; title?: string },
+): CreateResult {
+  const text = markdown.replace(/\r\n/g, "\n").trim()
+  if (!text) throw new Error("Paste the agent's markdown first")
+  if (text.length > MAX_PASTE) throw new Error("That is too long for one agent (limit 100,000 characters)")
+  const notes: string[] = []
+
+  const matched = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+  const fields: Record<string, string> = {}
+  let body = text
+  if (matched) {
+    body = matched[2].trim()
+    for (const line of matched[1].split("\n")) {
+      const at = line.indexOf(":")
+      if (at > 0) fields[line.slice(0, at).trim()] = line.slice(at + 1).trim()
+    }
+    if (fields.kit_dirs || fields.toolkit) notes.push("Ignored kit_dirs and toolkit: those are set by importing a kit.")
+  }
+
+  const heading = body.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim()
+  const title = (hint?.title || fields.title || heading || "").slice(0, 80)
+  if (!title) throw new Error("The agent needs a title: add a '# Title' line, or a title: line in the front matter")
+  if (!fields.title && !hint?.title) notes.push(`Title taken from the heading: ${title}`)
+
+  const wanted = (hint?.name || fields.name || title).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48)
+  const base = wanted || "custom-agent"
+  const existing = new Set(listCatalog(root, workspaceId).map((item) => item.name))
+  let name = base
+  for (let n = 2; existing.has(name); n++) name = `${base}-${n}`.slice(0, 48)
+  if (name !== base) notes.push(`The name ${base} was taken, so this agent is ${name}.`)
+
+  const draftAt = body.search(/^## Draft\s*$/m)
+  const instructions = (draftAt === -1 ? body : body.slice(0, draftAt)).trim()
+  if (!instructions) throw new Error("The agent has no instructions")
+  let draft = draftAt === -1 ? "" : body.slice(draftAt).replace(/^## Draft\s*/, "").trim()
+  if (!draft) {
+    draft = `Offline sample from ${title} for: {{requirement}}\n\nNo offline draft was provided. Add a Cursor key for a real answer.`
+    notes.push("No ## Draft section, so a placeholder offline reply was added.")
+  }
+
+  const tools = fields.tools !== undefined
+    ? fields.tools.split(",").map((tool) => tool.toLowerCase().trim()).filter(Boolean)
+    : inferTools(instructions)
+  const writes = tools.some((tool) => WRITE_TOOLS.has(tool))
+  const asked = fields.needs_approval === "true"
+  if (writes && !asked) notes.push("This agent can write to external systems, so it will pause for your OK after it runs.")
+
+  const sources = fields.sources
+    ? fields.sources.split(",").map((part) => part.trim()).filter((part) => SOURCE_NAMES.has(part))
+    : undefined
+
+  const out = serializeAgent({
+    name,
+    title,
+    needsApproval: asked || writes,
+    tools,
+    clonedFrom: null,
+    instructions,
+    draft,
+    ...(sources ? { sources } : {}),
+  })
+  const dir = customDir(root, workspaceId)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, `${name}.md`), out)
+  return { agent: findCatalogAgent(root, workspaceId, name)!, notes }
+}
+
 export function updateCustomAgent(
   root: string,
   workspaceId: string,

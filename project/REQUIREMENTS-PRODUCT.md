@@ -426,7 +426,7 @@ Recommended build order: **B (import spike) → A → B (finish: environment sco
 | **B2 – Environment scope** | Built | Custom agents and teams keyed by `scopeFor(workspaceId, environmentId)`; Default keeps the workspace-level ones | Sharing or copying agents between environments; per-agent overwrite policy on re-import |
 | **D – Builder** | Built (chains) | `src/graph.ts`; teams carry a graph that compiles to the ordered list; canvas in Team & agents with drag, connect, per-node approval | Branches and conditions (H); a Human-approve node type separate from an agent's gate; run-from-canvas progress |
 | **F – Guide** | Built | Help tab: first-5-minutes guide and live setup checklist with redirect URL and scopes (`src/setup.ts`, `GET /api/setup-check`) | Home empty-state CTAs (HG-3) |
-| **C – Create agent UX** | Not started | Existing duplicate-and-edit form | Paste-markdown create/edit |
+| **C – Create agent UX** | Built | Paste markdown to create an agent (`POST /api/catalog/create`, `createAgentFromMarkdown`); write tools force the OK gate; kit_dirs/toolkit cannot be set by a paste | Paste-to-update an existing agent; import from a file or URL |
 | **E – Swarm as node** | Not started | Kickoff group chat with fixed members | Swarm node with chosen members on the canvas |
 | **G – Cost defaults** | Not started | | Cheap tool model default; high-reasoning toggle |
 | **H – Branches** | Not started | | Conditions and skip paths |

@@ -14,6 +14,7 @@ import {
 } from "./auth.js"
 import {
   deleteCustomAgent,
+  createAgentFromMarkdown,
   duplicateAgent,
   findCatalogAgent,
   listCatalog,
@@ -321,6 +322,29 @@ app.get("/api/catalog/:name", (req, res) => {
       draft: agent.draft,
     },
   })
+})
+
+app.post("/api/catalog/create", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const user = requireUser(root, sessionId)
+    const result = createAgentFromMarkdown(root, writeScope(user), typeof req.body?.markdown === "string" ? req.body.markdown : "", {
+      name: typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name : undefined,
+      title: typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title : undefined,
+    })
+    res.json({
+      agent: {
+        name: result.agent.name,
+        title: result.agent.title,
+        needsApproval: result.agent.needsApproval,
+        origin: result.agent.origin,
+        tools: result.agent.tools,
+      },
+      notes: result.notes,
+    })
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Create agent failed" })
+  }
 })
 
 app.post("/api/catalog/duplicate", (req, res) => {

@@ -9,7 +9,7 @@ import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from
 import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, readGroup, writeGroup, parseTurnTag, resolveAlias, runGroup } from "./group.js"
-import { duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
+import { createAgentFromMarkdown, duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { compileGraph, linearGraph, parseGraph } from "./graph.js"
 import { createTeam, teamGraph, updateTeam } from "./teams.js"
 import { setupChecklist } from "./setup.js"
@@ -436,6 +436,32 @@ const flat = createTeam(teamRoot, "ws-a", { name: "List team", agentNames: names
 assert(teamGraph(flat).edges.length === 1, "a plain list team shows as a chain")
 const edited = updateTeam(teamRoot, "ws-a", made.id, { agentNames: names.slice(0, 2) })
 assert(!edited.graph && edited.agentNames.length === 2, "editing the list drops a stale canvas")
+// Creating an agent by pasting markdown: forgiving, but a paste can never loosen a safeguard.
+const pasted = createAgentFromMarkdown(teamRoot, "ws-a", "# Release notes writer\n\nRead the merged pull requests and write release notes.")
+assert(pasted.agent.name === "release-notes-writer" && pasted.agent.title === "Release notes writer", "a heading is enough to make an agent")
+assert(pasted.agent.draft.includes("{{requirement}}") && pasted.notes.some((note) => note.includes("placeholder")), "a missing Draft is filled in and reported")
+assert(createAgentFromMarkdown(teamRoot, "ws-a", "# Release notes writer\n\nSame again.").agent.name === "release-notes-writer-2", "a taken name gets a suffix")
+const sneaky = createAgentFromMarkdown(
+  teamRoot,
+  "ws-a",
+  "---\nname: sneaky\ntitle: Sneaky\ntools: jira\nkit_dirs: C:/Users/someone/secrets\ntoolkit: axian-squad\nsources: brd, nonsense\n---\nUpdate the Jira ticket.\n\n## Draft\n\nDone.",
+)
+assert(sneaky.agent.needsApproval === true, "a write tool forces the OK gate even if the paste did not ask for it")
+assert(!sneaky.agent.kitDirs && !sneaky.agent.toolkit, "a paste cannot point an agent at folders on this computer")
+assert(sneaky.agent.sources?.join() === "brd", "only known source names are kept")
+assert(sneaky.agent.draft === "Done." && sneaky.notes.some((note) => note.includes("Ignored")), "a supplied Draft is kept and ignored fields are reported")
+const pasteError = (text: string) => {
+  try {
+    createAgentFromMarkdown(teamRoot, "ws-a", text)
+    return ""
+  } catch (error) {
+    return error instanceof Error ? error.message : "?"
+  }
+}
+assert(pasteError("   ").includes("Paste"), "an empty paste is refused")
+assert(pasteError("just words, no heading").includes("title"), "a paste with no title is refused with a hint")
+assert(pasteError("# T\n" + "x".repeat(100_001)).includes("too long"), "an oversized paste is refused")
+
 // A team chooses who holds the kickoff discussion (swarm node).
 const withSwarm = (flags: boolean[]) => {
   const graph = linearGraph(["sa", "coding", "devops"])
