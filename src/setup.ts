@@ -16,6 +16,9 @@ export type CheckItem = {
 export type SetupInput = {
   baseUrl: string
   engine: string
+  /** Model id agents run on, and the deep-reasoning one if configured. */
+  model: string
+  reasoningModel: string | null
   signedIn: boolean
   atlassian: { configured: boolean; connected: boolean; scopes: string[]; extraScopes: string[] }
   figma: { configured: boolean; connected: boolean; scopes: string[]; hasToken: boolean }
@@ -71,7 +74,16 @@ export function setupChecklist(input: SetupInput): CheckItem[] {
           status: "todo",
           detail: "Without CURSOR_API_KEY in .env the agents answer with offline sample text (Draft mode). Add the key and restart for real discussions.",
         }
-      : { id: "model", label: "Model: live", status: "ok", detail: `Agents run on ${input.engine}.` },
+      : {
+          id: "model",
+          label: "Model: live",
+          status: "ok",
+          detail:
+            `Agents run on ${input.engine} with ${input.model}.` +
+            (input.reasoningModel
+              ? ` Agents ticked Deep in the builder use ${input.reasoningModel}.`
+              : " Tick Deep on an agent in the builder, after setting CURSOR_REASONING_MODEL in .env, to give it a stronger model."),
+        },
   )
 
   items.push(

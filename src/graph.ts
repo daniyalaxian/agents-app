@@ -12,6 +12,8 @@ export type GraphNode = {
   approval: boolean
   /** Joins the kickoff discussion (a group chat) instead of running alone. */
   swarm?: boolean
+  /** Run this agent on the high-reasoning model (costs more). */
+  reasoning?: boolean
   x: number
   y: number
 }
@@ -49,6 +51,7 @@ export function parseGraph(value: unknown): AutomationGraph {
       agent,
       approval: item.approval === true,
       swarm: item.swarm === true,
+      reasoning: item.reasoning === true,
       x: Number.isFinite(item.x) ? Number(item.x) : 0,
       y: Number.isFinite(item.y) ? Number(item.y) : 0,
     }

@@ -168,3 +168,8 @@ export function deleteTeam(root: string, workspaceId: string, teamId: string): v
 export function teamGraph(team: TeamRecord): AutomationGraph {
   return team.graph ?? linearGraph(team.agentNames, team.approvalMap)
 }
+
+/** Agents the team's canvas marks for the high-reasoning model. */
+export function teamReasoning(team: TeamRecord): string[] {
+  return team.graph?.nodes.filter((node) => node.reasoning).map((node) => node.agent) ?? []
+}

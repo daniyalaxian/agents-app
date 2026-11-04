@@ -234,6 +234,7 @@ export function resolveTeamAgents(
   workspaceId: string | null,
   agentNames: string[],
   approvalMap?: Record<string, boolean>,
+  reasoning: string[] = [],
 ): AgentFile[] {
   const catalog = listCatalog(root, workspaceId)
   const byName = new Map(catalog.map((agent) => [agent.name, agent]))
@@ -252,6 +253,7 @@ export function resolveTeamAgents(
       sources: agent.sources,
       kitDirs: agent.kitDirs,
       toolkit: agent.toolkit,
+      ...(reasoning.includes(name) ? { reasoning: true } : {}),
     })
   }
   if (!resolved.length) throw new Error("Team has no agents")

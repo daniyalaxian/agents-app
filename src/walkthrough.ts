@@ -11,7 +11,8 @@ import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runn
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, readGroup, writeGroup, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { createAgentFromMarkdown, duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { compileGraph, linearGraph, parseGraph } from "./graph.js"
-import { createTeam, teamGraph, updateTeam } from "./teams.js"
+import { createTeam, teamGraph, teamReasoning, updateTeam } from "./teams.js"
+import { modelFor } from "./runner.js"
 import { setupChecklist } from "./setup.js"
 import { sourceScope } from "./scope.js"
 import { importAxian } from "./toolkit.js"
@@ -462,6 +463,30 @@ assert(pasteError("   ").includes("Paste"), "an empty paste is refused")
 assert(pasteError("just words, no heading").includes("title"), "a paste with no title is refused with a hint")
 assert(pasteError("# T\n" + "x".repeat(100_001)).includes("too long"), "an oversized paste is refused")
 
+// Cost: the cheap model is the default; deep reasoning is opt-in per agent and never silently pricier.
+const savedModel = { m: process.env.CURSOR_MODEL, r: process.env.CURSOR_REASONING_MODEL, p: process.env.CURSOR_REASONING_PARAMS }
+delete process.env.CURSOR_MODEL
+delete process.env.CURSOR_REASONING_MODEL
+delete process.env.CURSOR_REASONING_PARAMS
+assert(modelFor(false).id === "composer-2.5" && !modelFor(false).deep, "the default is the low-cost model")
+assert(modelFor(true).id === "composer-2.5" && !modelFor(true).deep, "asking for deep reasoning without a configured model stays on the default")
+process.env.CURSOR_REASONING_MODEL = "big-thinker"
+process.env.CURSOR_REASONING_PARAMS = "effort=high, thinking=on, junk"
+assert(modelFor(false).id === "composer-2.5", "ordinary agents never move to the deep model")
+assert(modelFor(true).id === "big-thinker" && modelFor(true).deep, "a Deep agent uses the configured model")
+assert(JSON.stringify(modelFor(true).params) === JSON.stringify([{ id: "effort", value: "high" }, { id: "thinking", value: "on" }]), "params are parsed and junk is dropped")
+for (const [key, value] of [["CURSOR_MODEL", savedModel.m], ["CURSOR_REASONING_MODEL", savedModel.r], ["CURSOR_REASONING_PARAMS", savedModel.p]] as const) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
+const deepGraph = linearGraph(["sa", "coding"])
+deepGraph.nodes[1].reasoning = true
+const deepTeam = createTeam(teamRoot, "ws-a", { name: "Deep coder", agentNames: [], graph: deepGraph })
+assert(teamReasoning(deepTeam).join() === "coding", "the canvas marks reach the team")
+const deepAgents = resolveTeamAgents(teamRoot, null, ["sa", "coding"], deepTeam.approvalMap, teamReasoning(deepTeam))
+assert(deepAgents[1].reasoning === true && deepAgents[0].reasoning === undefined, "only the marked agent runs deep")
+assert(parseGraph(deepGraph).nodes[1].reasoning === true, "the mark survives saving")
+
 // A team chooses who holds the kickoff discussion (swarm node).
 const withSwarm = (flags: boolean[]) => {
   const graph = linearGraph(["sa", "coding", "devops"])
@@ -490,6 +515,8 @@ fs.rmSync(teamRoot, { recursive: true, force: true })
 const bare = {
   baseUrl: "https://agents.example.com/",
   engine: "draft",
+  model: "composer-2.5",
+  reasoningModel: null,
   signedIn: false,
   atlassian: { configured: false, connected: false, scopes: ["read:page:confluence", "offline_access"], extraScopes: ["read:comment:confluence"] },
   figma: { configured: true, connected: false, scopes: ["file_content:read"], hasToken: false },

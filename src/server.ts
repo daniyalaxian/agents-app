@@ -29,6 +29,7 @@ import {
   listTeams,
   updateTeam,
   teamGraph,
+  teamReasoning,
 } from "./teams.js"
 import { parseGraph } from "./graph.js"
 import { setupChecklist } from "./setup.js"
@@ -99,7 +100,7 @@ import {
   softResetRoom,
   type RunHooks,
 } from "./router.js"
-import { engineName, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
+import { engineName, modelFor, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
 import { ensureSession } from "./session.js"
 import { DEFAULT_ENV_ID, listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import {
@@ -211,6 +212,8 @@ app.get("/api/setup-check", (req, res) => {
     items: setupChecklist({
       baseUrl,
       engine: engineName(),
+      model: modelFor(false).id,
+      reasoningModel: process.env.CURSOR_REASONING_MODEL?.trim() || null,
       signedIn: Boolean(userForSession(root, sessionId)),
       atlassian: {
         configured: Boolean(atlassianConfig(baseUrl)),
@@ -508,7 +511,7 @@ app.post("/api/room/team", (req, res) => {
       res.status(403).json({ error: "Team not in your workspace" })
       return
     }
-    const swarm = resolveTeamAgents(root, userScope(user), team.agentNames, team.approvalMap)
+    const swarm = resolveTeamAgents(root, userScope(user), team.agentNames, team.approvalMap, teamReasoning(team))
     room.teamId = team.id
     room.stages = swarm.map((agent) => ({
       name: agent.name,
@@ -1572,10 +1575,13 @@ function kickoffMembers(room: Room): string[] {
 
 function groupAgents(thread: GroupThread, sessionId: string): AgentFile[] {
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
+  const room = current()
+  const team = (room.teamId && getTeam(root, room.teamId)) || ensureDefaultTeam(root)
+  const deep = teamReasoning(team)
   return thread.members.map((name) => {
-    const agent = findCatalogAgent(root, scopeFor(workspaceId, current().environmentId), name)
+    const agent = findCatalogAgent(root, scopeFor(workspaceId, room.environmentId), name)
     if (!agent) throw new Error(`Group member ${name} is not in the agent catalog`)
-    return agent
+    return deep.includes(name) ? { ...agent, reasoning: true } : agent
   })
 }
 
@@ -1845,7 +1851,7 @@ function present(room: Room) {
 function roomAgents(room: Room | null, workspaceId: string | null, environmentId: string | null = room?.environmentId ?? null) {
   const team =
     (room?.teamId && getTeam(root, room.teamId)) || ensureDefaultTeam(root)
-  return resolveTeamAgents(root, scopeFor(workspaceId, environmentId), team.agentNames, team.approvalMap)
+  return resolveTeamAgents(root, scopeFor(workspaceId, environmentId), team.agentNames, team.approvalMap, teamReasoning(team))
 }
 
 function finishedStageOutputs(room: Room): { title: string; output: string }[] {

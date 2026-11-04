@@ -117,7 +117,7 @@ async function runCursor(
 
   try {
     await using agent = await Agent.create({
-      ...agentOptions(key),
+      ...agentOptions(key, packet.role.reasoning),
       ...runtimeOptions(workdir, liveTools, codeDirs(packet.sources)),
     })
     return await sendAndWait(agent, prompt, packet.role.name, onDelta)
@@ -164,7 +164,7 @@ async function runCursorTurn(input: TurnInput, onDelta: (text: string) => void, 
   fs.mkdirSync(workdir, { recursive: true })
   const { Agent, CursorAgentError } = await import("@cursor/sdk")
   const liveTools = input.tools && supportsRuntimeTools() ? input.tools : undefined
-  const options = { ...agentOptions(key), ...runtimeOptions(workdir, liveTools, input.dirs) }
+  const options = { ...agentOptions(key, input.role.reasoning), ...runtimeOptions(workdir, liveTools, input.dirs) }
 
   try {
     if (input.agentId) {
@@ -188,10 +188,30 @@ async function runCursorTurn(input: TurnInput, onDelta: (text: string) => void, 
   }
 }
 
-function agentOptions(key: string) {
+export const DEFAULT_MODEL = "composer-2.5"
+
+/**
+ * Which model an agent runs on. The default is CURSOR_MODEL, the low-cost tool-capable one. An agent marked for deep
+ * reasoning uses CURSOR_REASONING_MODEL (with optional CURSOR_REASONING_PARAMS like "effort=high"). When that is not
+ * set, the agent stays on the default: nothing silently moves to a pricier model.
+ */
+export function modelFor(reasoning: boolean): { id: string; params?: { id: string; value: string }[]; deep: boolean } {
+  const base = process.env.CURSOR_MODEL?.trim() || DEFAULT_MODEL
+  const deepId = process.env.CURSOR_REASONING_MODEL?.trim()
+  if (!reasoning || !deepId) return { id: base, deep: false }
+  const params = (process.env.CURSOR_REASONING_PARAMS ?? "")
+    .split(",")
+    .map((pair) => pair.split("=").map((part) => part.trim()))
+    .filter(([id, value]) => id && value)
+    .map(([id, value]) => ({ id, value }))
+  return { id: deepId, ...(params.length ? { params } : {}), deep: true }
+}
+
+function agentOptions(key: string, reasoning = false) {
+  const { id, params } = modelFor(reasoning)
   return {
     apiKey: key,
-    model: { id: process.env.CURSOR_MODEL?.trim() || "composer-2.5" },
+    model: { id, ...(params ? { params } : {}) },
     mode: "agent" as const,
   }
 }

@@ -11,6 +11,8 @@ export type AgentFile = {
   kitDirs?: string[]
   /** Toolkit id this agent was imported from, e.g. axian-squad. */
   toolkit?: string
+  /** Use the high-reasoning model for this agent (set per node in the builder). */
+  reasoning?: boolean
 }
 
 export type StageStatus = "pending" | "running" | "waiting_approval" | "done" | "error"
