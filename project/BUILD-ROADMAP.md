@@ -351,6 +351,28 @@
 - [x] Setup checklist with redirect URLs and scopes
 - [ ] Home empty-state CTAs
 
+### 9.5 Token meter (T1)
+- [x] Per-stage usage (input/output/total, model, promptChars, sdk|estimate)
+- [x] Capture Cursor SDK `RunResult.usage` when present; estimate chars/4 otherwise (incl. draft)
+- [x] Chips + run summary bar in Build view
+- [x] Walkthrough prompt-size ceilings (`PROMPT_CHAR_CEILING` / first-role ceiling)
+- [ ] Token budgets + stop-at-100% (T3)
+
+### 9.6 Lean packets (T2)
+- [x] Hand-off summaries for prior outputs (`summarizeHandoff`, keeps gaps/tests/Write plans)
+- [x] Sources: folders by `localPath` only; pasted bodies capped
+- [x] `buildPrompt` stable prefix then volatile suffix (cache-friendly)
+- [x] Memory: top-N by kind priority (`selectMemoryForPacket`)
+- [x] Walkthrough: lean prompt &lt; 60% of legacy fat on bulky late role
+
+### 9.7 Concurrency (R / ENT-8)
+- [x] Per-room run lock + serial queue (`src/runs.ts`)
+- [x] Pipeline, DM, and group runs take the room slot lock
+- [x] Group live state keyed by slot (parallel kickoffs across rooms)
+- [x] Create / open environment or room while another room runs
+- [x] Reset blocked only when *that* room is busy
+- [x] Walkthrough: two slots overlap; same slot queues
+
 ---
 ## Phase 8 — Scale (parked)
 

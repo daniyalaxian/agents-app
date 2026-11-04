@@ -51,6 +51,7 @@ Keep element IDs stable, because handlers look them up once at load. Agent text 
 
 ## Project docs and rules
 
+- `project/PLATFORM-RESTRUCTURE.md` is the **target design** for the enterprise rebuild (workflows first, React frontend, JSON data layer, presets, RBAC, build phases 0–8). New work follows it; it supersedes the Environment-first structure in `REQUIREMENTS-PRODUCT.md`.
 - `project/AGENTS.md` is the project profile included in every agent prompt. It holds the rules every role follows: cite sources, record gaps instead of inventing requirements, never write externally without an approved Write plan, stay inside the role, and respect the Dev → Testing → Preprod → Prod ladder and the Jira Epic → Story → Subtask → Bug hierarchy.
 - `project/BUILD-ROADMAP.md` is the phase-by-phase checklist (Phases 0–8) and the source of truth for what is done and what comes next. `project/SDLC-DESIGN.md` describes the target design. `project/PRODUCT-PHASES.md` covers the product-level phasing.
 - Prompts and packets must never contain tokens or credentials. The walkthrough checks this.

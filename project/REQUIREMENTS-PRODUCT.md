@@ -22,6 +22,11 @@
 | D7 | Q4–Q20 | **Accepted** as written in §12 (enterprise recommendations). (2026-11-04) |
 | D8 | Top priorities | **1. Token efficiency** (§6.11) and **2. user flow** (§6.12) are the quality bar for every slice. A feature that doubles tokens or adds steps to the happy path needs a reason. (2026-11-04) |
 | D9 | Future integrations | Build **API-first** so the platform can later plug into other platforms (Slack/Teams, Jira app, IDEs, CI, other agent hubs) without a rewrite (§6.13). Not built now, but nothing may block it. (2026-11-04) |
+| D10 | Structure | **Workflows first.** After login people see their workflows; a workflow (agents, flow, group chats, sources, approvals, runs, memory) is the unit of isolation and access. **Supersedes D2 and the ENT-1 hierarchy**: Environment is no longer a level, a client becomes a label on workflows. Full design: `project/PLATFORM-RESTRUCTURE.md`. (2026-11-04) |
+| D11 | Frontend | **React + TypeScript + Vite** app in `web/`; Express becomes API-only and serves the build. (2026-11-04) |
+| D12 | Storage | **JSON files kept**, behind a data layer (repositories, atomic writes, locks, append-only audit log) so a database can replace it later. (2026-11-04) |
+| D13 | Start paths | New workflow from: ready-made SDLC, import a toolkit (Axian first), or a preset (SDLC, Marketing, SEO, Blank). (2026-11-04) |
+| D14 | Audience | **Non-technical first**: defaults always work; models, budgets, policies, keys under Advanced. (2026-11-04) |
 
 No open decisions in §12. New questions go to §12 “Later”.
 
@@ -471,6 +476,9 @@ Recommended build order: **B (import spike) → A → B (finish: environment sco
 
 | Slice | State | What exists | Not yet |
 | --- | --- | --- | --- |
+| **T1 – Token meter** | Built | `src/usage.ts`; per-stage `usage` (model, in/out/total, promptChars, sdk\|estimate); Cursor SDK usage when reported, else chars/4; chips + run summary bar; walkthrough ceilings | Budgets (T3); group-chat turn totals in UI |
+| **T2 – Lean packets** | Built | `src/packet.ts`: hand-off summaries (TOK-3), source folders by ref + body cap (TOK-4), cache-friendly prompt order (TOK-5), memory top-N by kind (TOK-9); walkthrough asserts lean &lt; 60% of fat on bulky late role | Budgets / auto-escalate (T3); resume for retry/DM (TOK-6) |
+| **R – Concurrency** | Built | `src/runs.ts` `withRoomLock`; pipeline/DM/group use per-slot queue; `liveGroups` Map; create/open room no longer blocked by other rooms; `/api/health` lists `activeRuns` | Hard concurrency limit / fair scheduling across orgs |
 | **B1 – Axian import spike** | Built | `src/toolkit.ts` adapter, `POST /api/toolkits/axian/import`, per-agent `sources` scoping (`src/scope.ts`), import form in Team & agents | Live run of an imported agent with a model key |
 | **A – Environments, rooms** | Built | `src/environments.ts`, one file per room under `data/rooms/`, per-session open room (`runWithSession` in `src/store.ts`), environment switcher and room list in the sidebar, environment-prefixed room ids | Per-room run lock (global `busy` remains: one run at a time, and switching is refused during a run); Home screen; Default environment is visible to every account |
 | **B2 – Environment scope** | Built | Custom agents and teams keyed by `scopeFor(workspaceId, environmentId)`; Default keeps the workspace-level ones | Sharing or copying agents between environments; per-agent overwrite policy on re-import |
@@ -490,9 +498,9 @@ Token measurement comes first because every later choice should be judged by it.
 
 | Step | Slice | Covers | Done when |
 | --- | --- | --- | --- |
-| 1 | **T1 – Token meter** | TOK-1, TOK-10 | Each stage and run shows tokens + model; walkthrough asserts per-role prompt size ceiling |
-| 2 | **T2 – Lean packets** | TOK-3, TOK-4, TOK-5, TOK-9 | Prior outputs go as summaries; prompt prefix ordered for caching; measured drop vs T1 baseline |
-| 3 | **R – Concurrency** | ENT-8 | Per-room run lock + queue; two environments run at once |
+| 1 | **T1 – Token meter** | TOK-1, TOK-10 | **Done (2026-11-04).** Stages + run bar show tokens/model; walkthrough asserts ceilings |
+| 2 | **T2 – Lean packets** | TOK-3, TOK-4, TOK-5, TOK-9 | **Done (2026-11-04).** Summaries + source refs + prompt order + memory top-N; lean &lt; 60% of fat in walkthrough |
+| 3 | **R – Concurrency** | ENT-8 | **Done (2026-11-04).** `src/runs.ts` per-slot lock + queue; group live map per room; open/create env while another runs |
 | 4 | **S – RBAC + audit** | ENT-1, ENT-2, ENT-3 | Roles enforced on routes; audit log of runs, tool calls, approvals |
 | 5 | **U1 – Start flow** | UF-1, UF-2, UF-5, UF-6, UF-7, HG-3 | Template picker → requirement → Run; clear stage state; empty-state CTAs |
 | 6 | **U2 – Approvals inbox** | UF-3, UF-8 | One inbox across rooms; approvers land there |
@@ -619,3 +627,7 @@ Direction (D6): **Agentic Automation is an enterprise platform.** One organizati
 | 2026-11-03 | D4 general platform, D5 import spike first; §7.7–7.10 Axian format, per-agent profile, conversion rules, spike acceptance; TK-8–11; §8.3 engine constraints; risks; measurable success 4; Q15–Q20 + proposed answers |
 | 2026-11-04 | D6 enterprise, multi-use-case direction; Q4–Q20 recommendations revised for enterprise; added ENT-1–ENT-11 |
 | 2026-11-04 | D7 Q4–Q20 accepted; D8 token efficiency + user flow as top priorities (§6.11 TOK, §6.12 UF); D9 integration-ready (§6.13 INT); next build order §9.2 |
+| 2026-11-04 | T1 token meter built (`src/usage.ts`, stage.usage, UI bar, walkthrough ceilings) |
+| 2026-11-04 | T2 lean packets (`src/packet.ts` summaries, source refs, prompt order, memory top-N) |
+| 2026-11-04 | R concurrency (`src/runs.ts` per-room lock + queue; liveGroups by slot) |
+| 2026-11-04 | D10–D14: workflows-first restructure, React frontend, JSON data layer, start paths, non-technical first. Design in `PLATFORM-RESTRUCTURE.md` |
