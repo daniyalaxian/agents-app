@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
+import { selectMemoryForPacket } from "./packet.js"
 import type { MemoryEntry, MemoryKind, Room } from "./types.js"
 
 export type MemoryStore = {
@@ -59,13 +60,14 @@ export function addMemory(
   return full
 }
 
-export function formatMemoryForPacket(entries: MemoryEntry[], limit = 40): string {
+export function formatMemoryForPacket(entries: MemoryEntry[], limit = 20): string {
   if (!entries.length) return "None yet."
-  return entries
-    .slice(-limit)
+  // Prefer gaps/decisions/tests over raw chronological dump (TOK-9).
+  const picked = selectMemoryForPacket(entries, limit)
+  return picked
     .map(
       (item) =>
-        `- [${item.kind}] ${item.title} (agent=${item.agent}; source=${item.source})\n  ${item.body.slice(0, 400)}`,
+        `- [${item.kind}] ${item.title} (agent=${item.agent}; source=${item.source})\n  ${item.body.slice(0, 280)}`,
     )
     .join("\n")
 }

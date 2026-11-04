@@ -8,7 +8,8 @@ import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, s
 import type { AgentFile } from "./types.js"
 import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from "./environments.js"
 import { listRoomSummaries, newSlot, readRoom, runWithSession, setActiveSlot, writeRoom } from "./store.js"
-import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
+import { buildPrompt, buildPromptLegacyFat, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
+import { HANDOFF_MAX_CHARS, summarizeHandoff } from "./packet.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, readGroup, writeGroup, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { createAgentFromMarkdown, duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
 import { compileGraph, linearGraph, parseGraph } from "./graph.js"
@@ -21,6 +22,13 @@ import { PermissionGate } from "./gate.js"
 import { findSprint } from "./jira.js"
 import { cursorCustomTools, type ToolRequest } from "./tools.js"
 import type { PermissionRequest, SourceDoc } from "./types.js"
+import {
+  FIRST_ROLE_PROMPT_CHAR_CEILING,
+  PROMPT_CHAR_CEILING,
+  estimateUsage,
+  sumUsage,
+} from "./usage.js"
+import { isRoomBusy, listActiveRuns, resetRunLocksForTests, withRoomLock } from "./runs.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 setMemoryRoot(root)
@@ -100,6 +108,64 @@ for (const name of approvals) {
 }
 
 assert(room.stages.every((stage) => stage.status === "done"), "every role should finish")
+
+// TOK-1: every finished stage has usage (router estimates when the runner omits it).
+assert(room.stages.every((stage) => stage.usage && stage.usage.promptChars > 0), "every stage should record usage")
+assert(room.stages.every((stage) => stage.usage?.source === "estimate"), "draft / custom runners use estimate source")
+const runTotals = sumUsage(room.stages.map((stage) => stage.usage))
+assert(runTotals.stagesWithUsage === room.stages.length && runTotals.totalTokens > 0, "run summary should sum stage tokens")
+assert(room.stages[0].usage!.promptChars <= FIRST_ROLE_PROMPT_CHAR_CEILING, "first role prompt stays under the tight ceiling")
+assert(
+  room.stages.every((stage) => stage.usage!.promptChars <= PROMPT_CHAR_CEILING),
+  "no role prompt may exceed the regression ceiling (TOK-10)",
+)
+const estimated = estimateUsage("abcd", "efgh", "composer-2.5")
+assert(estimated.inputTokens === 1 && estimated.outputTokens === 1 && estimated.source === "estimate", "estimate is chars/4")
+
+// TOK-3: hand-off summary keeps gaps/tests and shrinks fat outputs.
+const fatPrior = `${"x".repeat(5_000)}\n| GAP-001 | missing status | New | req |\nTEST-001 covers Paid\n## Write plan\n| Jira | Create Story | ORD | status |`
+const handoff = summarizeHandoff(fatPrior)
+assert(handoff.includes("GAP-001") && handoff.includes("TEST-001") && handoff.includes("Write plan"), "summary keeps gaps, tests, Write plan")
+assert(handoff.length <= HANDOFF_MAX_CHARS + 120, "summary stays near the hand-off ceiling")
+assert(handoff.length < fatPrior.length, "summary is shorter than the full output")
+
+// TOK-3/4/5: lean prompt vs pre-T2 fat prompt on a late role with bulky priors.
+const lateRole = agents[agents.length - 1]
+const bulkyPriors = room.stages
+  .filter((stage) => stage.output)
+  .map((stage) => ({ title: stage.title, output: `${stage.output}\n${"padding ".repeat(400)}` }))
+const leanPacket = {
+  requirement: room.requirement,
+  projectMarkdown: project,
+  role: lateRole,
+  prior: bulkyPriors,
+  notes: ["note"],
+  memory: "- [gap] GAP-001 (agent=sa; source=room:sa)\n  Missing status",
+  sources: [
+    {
+      kind: "paste" as const,
+      title: "Big paste",
+      url: "pasted://brs",
+      body: "BRS ".repeat(4_000),
+      localPath: undefined,
+    },
+    {
+      kind: "toolkit" as const,
+      title: "Kit",
+      url: "toolkit://axian",
+      body: "should not matter when localPath is set " + "y".repeat(2_000),
+      localPath: "D:/fake-kit",
+    },
+  ],
+}
+const lean = buildPrompt(leanPacket)
+const fat = buildPromptLegacyFat(leanPacket)
+assert(lean.includes("GAP-001"), "lean prompt still carries gap ids from summaries")
+assert(lean.includes("Readable folder: D:/fake-kit") && !lean.includes("should not matter"), "folders are by reference (TOK-4)")
+assert(lean.includes("# Earlier role outputs (hand-off summaries)"), "prompt labels hand-off summaries")
+assert(lean.indexOf("# Project file") < lean.indexOf("# Shared project memory"), "stable project block stays before volatile memory (TOK-5)")
+assert(lean.length < fat.length * 0.6, `lean prompt should be <60% of fat (${lean.length} vs ${fat.length})`)
+assert(lean.length < fat.length - 5_000, "lean prompt saves at least 5k chars on the bulky late-role sample")
 
 const qa = room.messages.find((message) => message.title === "QA Design")
 assert(qa?.packet?.sources.length === 0, "QA must not receive the Confluence source")
@@ -330,10 +396,11 @@ assert(sourceScope("qa-design", true).brd, "group chat members still share the B
 const axianRoom = await runUntilWait(openRoom(team), team, project, async (packet, onDelta) => {
   const out = runLocal(packet)
   onDelta(out)
-  assert(buildPrompt(packet).length < 30_000, "prompt size should stay small for imported agents")
+  assert(buildPrompt(packet).length <= PROMPT_CHAR_CEILING, "imported-agent prompt stays under TOK-10 ceiling")
   return { output: out }
 })
 assert(axianRoom.stages[0].name === "requirement-agent" && axianRoom.stages[0].status === "waiting_approval", "Axian run should stop at the first gate")
+assert(axianRoom.stages[0].usage?.promptChars && axianRoom.stages[0].usage.promptChars > 0, "Axian stages record usage too")
 
 // The real kit, when it is on this machine: 11 agents, ranks 0 to 7 on the team.
 const realKit = process.env.AXIAN_KIT_PATH || "D:/axian agents/squad-agent-kit"
@@ -611,4 +678,32 @@ if (savedDataDir === undefined) delete process.env.DATA_DIR
 else process.env.DATA_DIR = savedDataDir
 fs.rmSync(envData, { recursive: true, force: true })
 
-console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off, Axian import scoped, environments isolated")
+// ENT-8: per-room locks — two slots run together; one slot is serialized.
+resetRunLocksForTests()
+const order: string[] = []
+const a = withRoomLock("slot-a", "pipeline", async () => {
+  order.push("a-start")
+  assert(isRoomBusy("slot-a") && !isRoomBusy("slot-b"), "only slot-a is busy")
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  order.push("a-end")
+  return "A"
+})
+const b = withRoomLock("slot-b", "pipeline", async () => {
+  order.push("b-start")
+  assert(listActiveRuns().some((run) => run.slot === "slot-a"), "slot-a stays listed while both run")
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  order.push("b-end")
+  return "B"
+})
+const a2 = withRoomLock("slot-a", "dm", async () => {
+  order.push("a2")
+  return "A2"
+})
+const [ra, rb, ra2] = await Promise.all([a, b, a2])
+assert(ra === "A" && rb === "B" && ra2 === "A2", "all room locks resolve")
+assert(order.indexOf("b-start") < order.indexOf("a-end"), "different rooms overlap")
+assert(order.indexOf("a-end") < order.indexOf("a2"), "same room is queued, not parallel")
+assert(!isRoomBusy("slot-a") && !isRoomBusy("slot-b") && listActiveRuns().length === 0, "locks clear after work")
+resetRunLocksForTests()
+
+console.log("walkthrough ok: credentials sealed, Confluence only for SA, prior outputs only, runtime asks gated, group chat routed, kickoff hands off, Axian import scoped, environments isolated, token meter + prompt ceilings, lean packets, per-room run locks")

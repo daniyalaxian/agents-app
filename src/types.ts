@@ -1,4 +1,8 @@
 import type { SkipRule } from "./graph.js"
+import type { StageUsage } from "./usage.js"
+
+export type { StageUsage, RunUsageSummary } from "./usage.js"
+
 export type AgentFile = {
   name: string
   title: string
@@ -26,6 +30,8 @@ export type StageState = {
   status: StageStatus
   output: string | null
   agentId: string | null
+  /** Tokens + model for this stage (TOK-1). Null until the stage has run. */
+  usage: StageUsage | null
 }
 
 export type SourceDoc = {

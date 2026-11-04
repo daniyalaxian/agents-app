@@ -4,14 +4,18 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   bindSession,
+  listWorkspaceUsers,
   loginUser,
   publicUser,
   registerUser,
   requireUser,
+  setUserRole,
   unbindSession,
   userForSession,
   workspaceForSession,
 } from "./auth.js"
+import { appendAudit, readAudit } from "./audit.js"
+import { assertCan, capabilitiesFor, effectiveRole, type Capability } from "./rbac.js"
 import {
   deleteCustomAgent,
   createAgentFromMarkdown,
@@ -104,6 +108,7 @@ import {
 } from "./router.js"
 import { engineName, modelFor, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
 import { ensureSession } from "./session.js"
+import { isRoomBusy, listActiveRuns, withRoomLock } from "./runs.js"
 import { DEFAULT_ENV_ID, listRoomSummaries, newSlot, readRoom, runWithSession, setActiveSlot, writeRoom } from "./store.js"
 import {
   canUseEnvironment,
@@ -155,9 +160,40 @@ const workdir = path.join(root, "data", "workdir")
 const secrets = loadSecrets(root)
 const credentials = new CredentialStore(root, secrets.credentialsKey)
 const gate = new PermissionGate()
-let busy = false
-/** The group thread a run is working on, so messages sent mid-run join it. */
-let liveGroup: { thread: GroupThread; agents: AgentFile[]; pause: boolean } | null = null
+/** Group runs keyed by room slot — one live discussion per room, many rooms in parallel. */
+const liveGroups = new Map<string, { thread: GroupThread; agents: AgentFile[]; pause: boolean }>()
+
+function roomSlot(room: Room): string {
+  return room.slot || room.id
+}
+
+/** Returns false and sends 403 when the signed-in role lacks the capability. Unsigned = owner (local mode). */
+function requireCap(res: express.Response, sessionId: string, capability: Capability): boolean {
+  try {
+    assertCan(userForSession(root, sessionId), capability)
+    return true
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : "Forbidden" })
+    return false
+  }
+}
+
+function auditFrom(sessionId: string, room: Room | null, action: string, target: string, detail: string, ok: boolean) {
+  const user = userForSession(root, sessionId)
+  return appendAudit(root, {
+    actorId: user?.id ?? null,
+    actorEmail: user?.email ?? null,
+    actorRole: effectiveRole(user),
+    workspaceId: user?.workspaceId ?? null,
+    environmentId: room?.environmentId ?? null,
+    roomId: room?.id ?? null,
+    slot: room ? roomSlot(room) : null,
+    action,
+    target,
+    detail,
+    ok,
+  })
+}
 
 const app = express()
 app.use(express.json())
@@ -173,6 +209,7 @@ app.get("/api/health", (_req, res) => {
     jenkinsConfigured: Boolean(jenkinsConfig()),
     smokeConfigured: Boolean(smokeToken()),
     qaTestUserConfigured: Boolean(qaTestUser()),
+    activeRuns: listActiveRuns(),
   })
 })
 
@@ -190,6 +227,7 @@ app.get("/api/session", (req, res) => {
   const user = userForSession(root, sessionId)
   const workspace = workspaceForSession(root, sessionId)
   ensureDefaultTeam(root)
+  const role = effectiveRole(user)
   res.json({
     engine: engineName(),
     atlassianConfigured: Boolean(atlassianConfig(baseUrl)),
@@ -199,6 +237,8 @@ app.get("/api/session", (req, res) => {
     smokeConfigured: Boolean(smokeToken()),
     qaTestUserConfigured: Boolean(qaTestUser()),
     user: user ? publicUser(user) : null,
+    role,
+    capabilities: capabilitiesFor(role),
     workspace: workspace ? { id: workspace.id, name: workspace.name } : null,
     atlassian: atlassian
       ? { connected: true, siteName: atlassian.siteName, siteUrl: atlassian.siteUrl }
@@ -337,6 +377,7 @@ app.get("/api/catalog/:name", (req, res) => {
 
 app.post("/api/catalog/create", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_catalog")) return
   try {
     const user = requireUser(root, sessionId)
     const result = createAgentFromMarkdown(root, writeScope(user), typeof req.body?.markdown === "string" ? req.body.markdown : "", {
@@ -360,6 +401,7 @@ app.post("/api/catalog/create", (req, res) => {
 
 app.post("/api/catalog/duplicate", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_catalog")) return
   try {
     const user = requireUser(root, sessionId)
     const sourceName = typeof req.body?.sourceName === "string" ? req.body.sourceName.trim() : ""
@@ -388,6 +430,7 @@ app.post("/api/catalog/duplicate", (req, res) => {
 
 app.post("/api/catalog/:name", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_catalog")) return
   try {
     const user = requireUser(root, sessionId)
     const agent = updateCustomAgent(root, writeScope(user), String(req.params.name), {
@@ -417,9 +460,11 @@ app.post("/api/catalog/:name", (req, res) => {
 
 app.delete("/api/catalog/:name", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_catalog")) return
   try {
     const user = requireUser(root, sessionId)
     deleteCustomAgent(root, writeScope(user), String(req.params.name))
+    auditFrom(sessionId, current(), "catalog.delete", String(req.params.name), "custom agent removed", true)
     res.json({ ok: true })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Delete failed" })
@@ -428,6 +473,7 @@ app.delete("/api/catalog/:name", (req, res) => {
 
 app.post("/api/toolkits/axian/import", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "import_toolkit")) return
   try {
     const user = requireUser(root, sessionId)
     const kitPath =
@@ -436,7 +482,9 @@ app.post("/api/toolkits/axian/import", (req, res) => {
       res.status(400).json({ error: "Give the Axian kit folder, or set AXIAN_KIT_PATH" })
       return
     }
-    res.json(importAxian(root, writeScope(user), kitPath, { overwrite: req.body?.overwrite === true }))
+    const result = importAxian(root, writeScope(user), kitPath, { overwrite: req.body?.overwrite === true })
+    auditFrom(sessionId, current(), "toolkit.import", "axian-squad", kitPath, true)
+    res.json(result)
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Import failed" })
   }
@@ -450,6 +498,7 @@ app.get("/api/teams", (req, res) => {
 
 app.post("/api/teams", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_automation")) return
   try {
     const user = requireUser(root, sessionId)
     const agentNames = Array.isArray(req.body?.agentNames)
@@ -471,6 +520,7 @@ app.post("/api/teams", (req, res) => {
 
 app.post("/api/teams/:id", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_automation")) return
   try {
     const user = requireUser(root, sessionId)
     const team = updateTeam(root, writeScope(user), String(req.params.id), {
@@ -491,6 +541,7 @@ app.post("/api/teams/:id", (req, res) => {
 
 app.delete("/api/teams/:id", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "edit_automation")) return
   try {
     const user = requireUser(root, sessionId)
     deleteTeam(root, writeScope(user), String(req.params.id))
@@ -527,6 +578,7 @@ app.post("/api/room/team", (req, res) => {
       status: "pending" as const,
       output: null,
       agentId: null,
+      usage: null,
     }))
     writeRoom(root, room)
     res.json({ ...present(room), team })
@@ -683,17 +735,15 @@ app.get("/api/environments", (req, res) => {
 
 app.post("/api/environments", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "manage_environment")) return
   try {
     const user = requireUser(root, sessionId)
-    if (busy || liveGroup) {
-      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
-      return
-    }
     const env = createEnvironment(root, user.workspaceId, {
       name: typeof req.body?.name === "string" ? req.body.name : "",
       description: typeof req.body?.description === "string" ? req.body.description : "",
     })
     openNewRoom(env.id, user.workspaceId, undefined)
+    auditFrom(sessionId, current(), "environment.create", env.id, env.name, true)
     res.json(environmentsView(user.workspaceId))
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not create the environment" })
@@ -722,10 +772,6 @@ app.post("/api/environments/:id/rooms", (req, res) => {
     const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
     const env = getEnvironment(root, String(req.params.id))
     if (!env || !canUseEnvironment(env, workspaceId)) throw new Error("Environment not found")
-    if (busy || liveGroup) {
-      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
-      return
-    }
     const requirement =
       typeof req.body?.requirement === "string" && req.body.requirement.trim() ? req.body.requirement.trim() : undefined
     openNewRoom(env.id, workspaceId, requirement)
@@ -739,10 +785,6 @@ app.post("/api/rooms/:slot/open", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   try {
     const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
-    if (busy || liveGroup) {
-      res.status(409).json({ error: "A run is in progress. Wait for it to finish before switching." })
-      return
-    }
     const room = readRoom(root, String(req.params.slot))
     if (!room) throw new Error("Room not found")
     const env = getEnvironment(root, room.environmentId ?? DEFAULT_ENV_ID)
@@ -760,10 +802,6 @@ app.get("/api/room", (req, res) => {
 })
 
 app.post("/api/room/reset", (req, res) => {
-  if (busy) {
-    res.status(409).json({ error: "A role is already running" })
-    return
-  }
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
   const hard = Boolean(req.body?.hard)
@@ -772,6 +810,10 @@ app.post("/api/room/reset", (req, res) => {
       ? req.body.requirement.trim()
       : undefined
   const active = current()
+  if (isRoomBusy(roomSlot(active)) || liveGroups.has(roomSlot(active))) {
+    res.status(409).json({ error: "This room is already running" })
+    return
+  }
   const prior = hard ? null : active
   const swarm = roomAgents(prior, workspaceId)
   const room = hard ? openRoom(swarm, requirement, active.environmentId) : softResetRoom(prior!, swarm, requirement)
@@ -828,8 +870,10 @@ app.get("/api/permissions/live", (req, res) => {
 
 app.post("/api/room/permissions/:id/approve", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "write_approve")) return
   // A live ask: wake the blocked tool call. The run itself makes the write.
   if (gate.answer(req.params.id, { approved: true, remember: req.body?.remember === true, reason: null })) {
+    auditFrom(sessionId, current(), "permission.approve", String(req.params.id), "live runtime ask", true)
     res.json({ ok: true, live: true })
     return
   }
@@ -867,6 +911,14 @@ app.post("/api/room/permissions/:id/approve", async (req, res) => {
       at: new Date().toISOString(),
     })
     writeRoom(root, room)
+    auditFrom(
+      sessionId,
+      room,
+      "permission.approve",
+      `${permission.system}:${permission.action}`,
+      permission.target,
+      true,
+    )
     res.json(present(room))
   } catch (error) {
     permission.status = "failed"
@@ -884,14 +936,17 @@ app.post("/api/room/permissions/:id/approve", async (req, res) => {
       surface: permission.surface || "room",
     })
     writeRoom(root, room)
+    auditFrom(sessionId, room, "permission.approve", permission.target, permission.error, false)
     res.status(502).json({ error: permission.error, room: present(room) })
   }
 })
 
 app.post("/api/room/permissions/:id/deny", (req, res) => {
-  ensureSession(req, res, secrets.sessionSecret)
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "write_approve")) return
   const reason = typeof req.body?.reason === "string" && req.body.reason.trim() ? req.body.reason.trim() : null
   if (gate.answer(req.params.id, { approved: false, remember: false, reason })) {
+    auditFrom(sessionId, current(), "permission.deny", String(req.params.id), reason || "live runtime ask", true)
     res.json({ ok: true, live: true })
     return
   }
@@ -926,6 +981,14 @@ app.post("/api/room/permissions/:id/deny", (req, res) => {
     at: new Date().toISOString(),
   })
   writeRoom(root, room)
+  auditFrom(
+    sessionId,
+    room,
+    "permission.deny",
+    `${permission.system}:${permission.action}`,
+    reason || permission.target,
+    true,
+  )
   res.json(present(room))
 })
 
@@ -990,10 +1053,7 @@ app.get("/api/dm/:agentName", (req, res) => {
 
 app.post("/api/dm/:agentName/message", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
-  if (busy) {
-    res.status(409).json({ error: "A role is already running" })
-    return
-  }
+  if (!requireCap(res, sessionId, "run")) return
   const room = current()
   const agentName = String(req.params.agentName || "")
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
@@ -1008,8 +1068,6 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
     return
   }
 
-  busy = true
-  const runId = crypto.randomUUID()
   const thread = readDm(root, room.id, agentName)
   thread.messages.push({
     id: crypto.randomUUID(),
@@ -1018,114 +1076,115 @@ app.post("/api/dm/:agentName/message", async (req, res) => {
     body,
     at: new Date().toISOString(),
   })
-  try {
-    const sources = await loadSourcesForRole(sessionId, room, agent.name, false, agent)
-    const dmHistory = thread.messages
-      .slice(-20)
-      .map((msg) => `${msg.title}: ${msg.body}`)
-      .join("\n\n")
-    const packet = {
-      requirement: room.requirement,
-      projectMarkdown: projectMarkdown(),
-      role: agent,
-      prior: finishedStageOutputs(room),
-      notes: room.notes,
-      sources,
-      memory: formatMemoryForPacket(memoryEntriesForRoom(root, room)),
-      dmHistory,
+  await withRoomLock(roomSlot(room), "dm", async (runId) => {
+    try {
+      const sources = await loadSourcesForRole(sessionId, room, agent.name, false, agent)
+      const dmHistory = thread.messages
+        .slice(-20)
+        .map((msg) => `${msg.title}: ${msg.body}`)
+        .join("\n\n")
+      const packet = {
+        requirement: room.requirement,
+        projectMarkdown: projectMarkdown(),
+        role: agent,
+        prior: finishedStageOutputs(room),
+        notes: room.notes,
+        sources,
+        memory: formatMemoryForPacket(memoryEntriesForRoom(root, room)),
+        dmHistory,
+      }
+
+      const runner = selectRunner(workdir)
+      const tools = runtimeTools({
+        sessionId,
+        room,
+        agent,
+        runId,
+        surface: "dm",
+        onChange: () => writeRoom(root, room),
+      })
+      const result = await runner(packet, () => undefined, tools)
+      const output = appendDmAck(result.output, body)
+
+      const { indexAgentOutput } = await import("./memory.js")
+      indexAgentOutput({
+        root,
+        roomId: room.id,
+        agentName: agent.name,
+        agentTitle: agent.title,
+        output,
+        surface: "dm",
+      })
+
+      const plans = parseWritePlans(output, {
+        roleName: agent.name,
+        roleTitle: agent.title,
+        surface: "dm",
+      })
+      if (plans.length) {
+        room.permissions = [...(room.permissions || []), ...plans]
+        writeRoom(root, room)
+      }
+
+      thread.messages.push({
+        id: crypto.randomUUID(),
+        kind: "agent",
+        title: agent.title,
+        body: output,
+        at: new Date().toISOString(),
+        agentId: result.agentId,
+      })
+      writeDm(root, thread)
+
+      res.json({
+        thread,
+        room: present(room),
+        permissionsAdded: plans.length,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "DM failed"
+      // Keep the person's message and show the failure in the thread, so nothing is lost.
+      thread.messages.push({
+        id: crypto.randomUUID(),
+        kind: "agent",
+        title: agent.title,
+        body: `I could not reply: ${message}`,
+        at: new Date().toISOString(),
+      })
+      writeDm(root, thread)
+      res.status(502).json({ error: message, thread })
+    } finally {
+      gate.endRun(runId)
     }
-
-    const runner = selectRunner(workdir)
-    const tools = runtimeTools({
-      sessionId,
-      room,
-      agent,
-      runId,
-      surface: "dm",
-      onChange: () => writeRoom(root, room),
-    })
-    const result = await runner(packet, () => undefined, tools)
-    const output = appendDmAck(result.output, body)
-
-    const { indexAgentOutput } = await import("./memory.js")
-    indexAgentOutput({
-      root,
-      roomId: room.id,
-      agentName: agent.name,
-      agentTitle: agent.title,
-      output,
-      surface: "dm",
-    })
-
-    const plans = parseWritePlans(output, {
-      roleName: agent.name,
-      roleTitle: agent.title,
-      surface: "dm",
-    })
-    if (plans.length) {
-      room.permissions = [...(room.permissions || []), ...plans]
-      writeRoom(root, room)
-    }
-
-    thread.messages.push({
-      id: crypto.randomUUID(),
-      kind: "agent",
-      title: agent.title,
-      body: output,
-      at: new Date().toISOString(),
-      agentId: result.agentId,
-    })
-    writeDm(root, thread)
-
-    res.json({
-      thread,
-      room: present(room),
-      permissionsAdded: plans.length,
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "DM failed"
-    // Keep the person's message and show the failure in the thread, so nothing is lost.
-    thread.messages.push({
-      id: crypto.randomUUID(),
-      kind: "agent",
-      title: agent.title,
-      body: `I could not reply: ${message}`,
-      at: new Date().toISOString(),
-    })
-    writeDm(root, thread)
-    res.status(502).json({ error: message, thread })
-  } finally {
-    gate.endRun(runId)
-    busy = false
-  }
+  })
 })
 
 app.get("/api/group", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const room = current()
-  const thread = liveGroup?.thread ?? readGroup(root, room.id, kickoffMembers(room))
-  res.json(presentGroup(thread, groupAgents(thread, sessionId)))
+  const live = liveGroups.get(roomSlot(room))
+  const thread = live?.thread ?? readGroup(root, room.id, kickoffMembers(room))
+  res.json(presentGroup(thread, groupAgents(thread, sessionId), roomSlot(room)))
 })
 
 /** Send a message. Mid-run it joins the live thread; otherwise it starts a run (NDJSON stream). */
 app.post("/api/group/message", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
   const body = typeof req.body?.body === "string" ? req.body.body.trim() : ""
-  if (liveGroup) {
+  const room = current()
+  const slot = roomSlot(room)
+  const live = liveGroups.get(slot)
+  if (live) {
+    if (!requireCap(res, sessionId, "run")) return
     if (!body) {
       res.status(409).json({ error: "The group is already talking" })
       return
     }
-    addHumanMessage(liveGroup.thread, body, liveGroup.agents)
-    writeGroup(root, liveGroup.thread)
-    res.json({ queued: true, ...presentGroup(liveGroup.thread, liveGroup.agents) })
+    addHumanMessage(live.thread, body, live.agents)
+    writeGroup(root, live.thread)
+    res.json({ queued: true, ...presentGroup(live.thread, live.agents, slot) })
     return
   }
-  if (busy) {
-    res.status(409).json({ error: "A role is already running" })
-    return
-  }
-  const room = current()
   const thread = readGroup(root, room.id, kickoffMembers(room))
   if (!thread.members.length) {
     res.status(409).json({ error: "This team has no kickoff discussion. Tick Discuss on two or more agents in the builder." })
@@ -1139,11 +1198,12 @@ app.post("/api/group/message", async (req, res) => {
 /** Finish kickoff: its members' stages are done; the pipeline continues at the next role. */
 app.post("/api/group/handoff", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
-  if (liveGroup || busy) {
+  const room = current()
+  const slot = roomSlot(room)
+  if (liveGroups.has(slot) || isRoomBusy(slot)) {
     res.status(409).json({ error: "Wait until the group has stopped talking" })
     return
   }
-  const room = current()
   const thread = readGroup(root, room.id, kickoffMembers(room))
   if (!thread.messages.some((message) => message.kind === "agent")) {
     res.status(409).json({ error: "Run the kickoff discussion first" })
@@ -1152,26 +1212,29 @@ app.post("/api/group/handoff", async (req, res) => {
   const handed = handoffStages(room, thread)
   writeRoom(root, handed)
   const workspaceId = userForSession(root, sessionId)?.workspaceId ?? null
-  await streamRun(res, sessionId, (hooks) =>
+  await streamRun(res, sessionId, handed, (hooks) =>
     runUntilWait(handed, roomAgents(handed, workspaceId), projectMarkdown(), selectRunner(workdir), hooks),
   )
 })
 
 app.post("/api/group/pause", (req, res) => {
   ensureSession(req, res, secrets.sessionSecret)
-  if (liveGroup) liveGroup.pause = true
+  const live = liveGroups.get(roomSlot(current()))
+  if (live) live.pause = true
   res.json({ ok: true })
 })
 
 app.post("/api/group/reset", (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
-  if (liveGroup) {
+  const room = current()
+  const slot = roomSlot(room)
+  if (liveGroups.has(slot) || isRoomBusy(slot)) {
     res.status(409).json({ error: "Pause the group before starting over" })
     return
   }
-  const thread = newGroup(current().id, kickoffMembers(current()))
+  const thread = newGroup(room.id, kickoffMembers(room))
   writeGroup(root, thread)
-  res.json(presentGroup(thread, groupAgents(thread, sessionId)))
+  res.json(presentGroup(thread, groupAgents(thread, sessionId), slot))
 })
 
 app.post("/api/room/source", async (req, res) => {
@@ -1479,39 +1542,90 @@ app.get("/api/room/health-report", async (req, res) => {
 
 app.post("/api/room/start", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "run")) return
   const room = current()
   if (room.stages.some((stage) => stage.status !== "pending")) {
     res.json(present(room))
     return
   }
-  await streamRun(res, sessionId, (hooks) =>
+  auditFrom(sessionId, room, "run.start", room.id, room.requirement.slice(0, 200), true)
+  await streamRun(res, sessionId, room, (hooks) =>
     runUntilWait(room, roomAgents(room, userForSession(root, sessionId)?.workspaceId ?? null), projectMarkdown(), selectRunner(workdir), hooks),
   )
 })
 
 app.post("/api/room/approve", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "stage_approve")) return
   const room = current()
   if (!room.stages.some((stage) => stage.status === "waiting_approval")) {
     res.status(409).json({ error: "Nothing is waiting for approval" })
     return
   }
   const note = typeof req.body?.note === "string" ? req.body.note : undefined
-  await streamRun(res, sessionId, (hooks) =>
+  const waiting = room.stages.find((stage) => stage.status === "waiting_approval")
+  auditFrom(sessionId, room, "run.stage_approve", waiting?.name || room.id, note || "", true)
+  await streamRun(res, sessionId, room, (hooks) =>
     approveAndContinue(room, roomAgents(room, userForSession(root, sessionId)?.workspaceId ?? null), projectMarkdown(), selectRunner(workdir), note, hooks),
   )
 })
 
 app.post("/api/room/retry", async (req, res) => {
   const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "run")) return
   const room = current()
   if (!room.stages.some((stage) => stage.status === "error")) {
     res.status(409).json({ error: "Nothing needs a retry" })
     return
   }
-  await streamRun(res, sessionId, (hooks) =>
+  auditFrom(sessionId, room, "run.retry", room.id, "", true)
+  await streamRun(res, sessionId, room, (hooks) =>
     retry(room, roomAgents(room, userForSession(root, sessionId)?.workspaceId ?? null), projectMarkdown(), selectRunner(workdir), hooks),
   )
+})
+
+app.get("/api/audit", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "view_audit")) return
+  const limit = Number(req.query.limit) || 100
+  const environmentId = typeof req.query.environmentId === "string" ? req.query.environmentId : undefined
+  res.json({ events: readAudit(root, { limit, environmentId }) })
+})
+
+app.get("/api/workspace/members", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  try {
+    const user = requireUser(root, sessionId)
+    const role = effectiveRole(user)
+    if (!capabilitiesFor(role).includes("manage_members") && !capabilitiesFor(role).includes("view_audit")) {
+      res.status(403).json({ error: `Your role (${role}) cannot view members` })
+      return
+    }
+    res.json({
+      members: listWorkspaceUsers(root, user.workspaceId).map((item) => publicUser(item)),
+    })
+  } catch (error) {
+    res.status(401).json({ error: error instanceof Error ? error.message : "Sign in required" })
+  }
+})
+
+app.post("/api/workspace/members/:id/role", (req, res) => {
+  const sessionId = ensureSession(req, res, secrets.sessionSecret)
+  if (!requireCap(res, sessionId, "manage_members")) return
+  try {
+    const actor = requireUser(root, sessionId)
+    const role = typeof req.body?.role === "string" ? req.body.role : ""
+    const existing = listWorkspaceUsers(root, actor.workspaceId).find((item) => item.id === String(req.params.id))
+    if (!existing) {
+      res.status(404).json({ error: "User is not in your workspace" })
+      return
+    }
+    const updated = setUserRole(root, existing.id, role as never)
+    auditFrom(sessionId, current(), "members.set_role", updated.id, `${updated.email} → ${updated.role}`, true)
+    res.json({ user: publicUser(updated) })
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not change role" })
+  }
 })
 
 app.listen(port, () => {
@@ -1521,57 +1635,58 @@ app.listen(port, () => {
 async function streamRun(
   res: express.Response,
   sessionId: string,
+  room: Room,
   work: (hooks: RunHooks) => Promise<Room>,
 ) {
-  if (busy) {
-    res.status(409).json({ error: "A role is already running" })
-    return
-  }
-  busy = true
-  const runId = crypto.randomUUID()
-  res.status(200)
-  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
-  res.setHeader("Cache-Control", "no-cache, no-transform")
-  res.flushHeaders()
-  const emit = (event: unknown) => {
-    res.write(`${JSON.stringify(event)}\n`)
-  }
-  const hooks: RunHooks = {
-    onRoom: (room) => {
-      writeRoom(root, room)
-      emit({ type: "room", room: present(room) })
-    },
-    onDelta: (roleName, text) => {
-      const title =
-        roomAgents(current(), null).find((agent) => agent.name === roleName)?.title ?? roleName
-      emit({ type: "delta", name: roleName, title, text })
-    },
-    loadSources: (room, roleName, agent) => loadSourcesForRole(sessionId, room, roleName, false, agent),
-    toolsFor: (room, agent) =>
-      runtimeTools({
-        sessionId,
-        room,
-        agent,
-        runId,
-        surface: "room",
-        onChange: () => {
-          writeRoom(root, room)
-          emit({ type: "room", room: present(room) })
-        },
-      }),
-  }
-  try {
-    const room = await work(hooks)
-    writeRoom(root, room)
-    emit({ type: "room", room: present(room) })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "The run failed"
-    emit({ type: "error", message })
-  } finally {
-    gate.endRun(runId)
-    busy = false
-    res.end()
-  }
+  const slot = roomSlot(room)
+  await withRoomLock(slot, "pipeline", async (runId) => {
+    res.status(200)
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
+    res.setHeader("Cache-Control", "no-cache, no-transform")
+    res.flushHeaders()
+    const emit = (event: unknown) => {
+      res.write(`${JSON.stringify(event)}\n`)
+    }
+    let latest = room
+    const hooks: RunHooks = {
+      onRoom: (next) => {
+        latest = next
+        writeRoom(root, next)
+        emit({ type: "room", room: present(next) })
+      },
+      onDelta: (roleName, text) => {
+        const title =
+          latest.stages.find((stage) => stage.name === roleName)?.title ??
+          roomAgents(latest, null).find((agent) => agent.name === roleName)?.title ??
+          roleName
+        emit({ type: "delta", name: roleName, title, text })
+      },
+      loadSources: (next, roleName, agent) => loadSourcesForRole(sessionId, next, roleName, false, agent),
+      toolsFor: (next, agent) =>
+        runtimeTools({
+          sessionId,
+          room: next,
+          agent,
+          runId,
+          surface: "room",
+          onChange: () => {
+            writeRoom(root, next)
+            emit({ type: "room", room: present(next) })
+          },
+        }),
+    }
+    try {
+      const next = await work(hooks)
+      writeRoom(root, next)
+      emit({ type: "room", room: present(next) })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The run failed"
+      emit({ type: "error", message })
+    } finally {
+      gate.endRun(runId)
+      res.end()
+    }
+  })
 }
 
 /** Who holds this room's kickoff discussion: the team's chosen agents, else the SDLC trio when the team has them. */
@@ -1593,11 +1708,12 @@ function groupAgents(thread: GroupThread, sessionId: string): AgentFile[] {
   })
 }
 
-function presentGroup(thread: GroupThread, agents: AgentFile[]) {
+function presentGroup(thread: GroupThread, agents: AgentFile[], slot?: string) {
+  const key = slot ?? roomSlot(current())
   return {
     thread,
     members: agents.map((agent) => ({ name: agent.name, title: agent.title })),
-    running: Boolean(liveGroup),
+    running: liveGroups.has(key),
     engine: engineName(),
   }
 }
@@ -1609,72 +1725,72 @@ async function streamGroup(
   thread: GroupThread,
   agents: AgentFile[],
 ) {
-  busy = true
-  liveGroup = { thread, agents, pause: false }
-  const live = liveGroup
-  const runId = crypto.randomUUID()
-  res.status(200)
-  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
-  res.setHeader("Cache-Control", "no-cache, no-transform")
-  res.flushHeaders()
-  const emit = (event: unknown) => {
-    res.write(`${JSON.stringify(event)}\n`)
-  }
-  const sync = () => {
-    writeGroup(root, thread)
-    emit({ type: "group", ...presentGroup(thread, agents) })
-  }
-  let sharedSources: Promise<SourceDoc[]> | null = null
-  try {
-    await runGroup(thread, {
-      agents,
-      runner: selectTurnRunner(workdir),
-      requirement: room.requirement,
-      maxTurns: Number(process.env.GROUP_MAX_TURNS) || 12,
-      withTools: supportsRuntimeTools(),
-      // Members share the same sources, so load them once per run.
-      sourcesFor: (agent) => (sharedSources ??= loadSourcesForRole(sessionId, room, agent.name, true, agent)),
-      contextFor: async (agent, sources) =>
-        groupContext({
-          agent,
-          projectMarkdown: projectMarkdown(),
-          requirement: room.requirement,
-          memory: formatMemoryForPacket(memoryEntriesForRoom(root, room)),
-          sources,
-          notes: room.notes,
-        }),
-      toolsFor: (agent) =>
-        runtimeTools({
-          sessionId,
-          room,
-          agent,
-          runId,
-          surface: "group",
-          onChange: () => writeRoom(root, room),
-        }),
-      onThread: sync,
-      onDelta: (agent, text) => emit({ type: "delta", name: agent.name, title: agent.title, text }),
-      onMessage: (agent, message) => {
-        indexAgentOutput({
-          root,
-          roomId: room.id,
-          agentName: agent.name,
-          agentTitle: agent.title,
-          output: message.body,
-          surface: "group",
-        })
-      },
-      shouldPause: () => live.pause,
-    })
-  } catch (error) {
-    emit({ type: "error", message: error instanceof Error ? error.message : "The group run failed" })
-  } finally {
-    gate.endRun(runId)
-    liveGroup = null
-    busy = false
-    sync()
-    res.end()
-  }
+  const slot = roomSlot(room)
+  await withRoomLock(slot, "group", async (runId) => {
+    const live = { thread, agents, pause: false }
+    liveGroups.set(slot, live)
+    res.status(200)
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8")
+    res.setHeader("Cache-Control", "no-cache, no-transform")
+    res.flushHeaders()
+    const emit = (event: unknown) => {
+      res.write(`${JSON.stringify(event)}\n`)
+    }
+    const sync = () => {
+      writeGroup(root, thread)
+      emit({ type: "group", ...presentGroup(thread, agents, slot) })
+    }
+    let sharedSources: Promise<SourceDoc[]> | null = null
+    try {
+      await runGroup(thread, {
+        agents,
+        runner: selectTurnRunner(workdir),
+        requirement: room.requirement,
+        maxTurns: Number(process.env.GROUP_MAX_TURNS) || 12,
+        withTools: supportsRuntimeTools(),
+        // Members share the same sources, so load them once per run.
+        sourcesFor: (agent) => (sharedSources ??= loadSourcesForRole(sessionId, room, agent.name, true, agent)),
+        contextFor: async (agent, sources) =>
+          groupContext({
+            agent,
+            projectMarkdown: projectMarkdown(),
+            requirement: room.requirement,
+            memory: formatMemoryForPacket(memoryEntriesForRoom(root, room)),
+            sources,
+            notes: room.notes,
+          }),
+        toolsFor: (agent) =>
+          runtimeTools({
+            sessionId,
+            room,
+            agent,
+            runId,
+            surface: "group",
+            onChange: () => writeRoom(root, room),
+          }),
+        onThread: sync,
+        onDelta: (agent, text) => emit({ type: "delta", name: agent.name, title: agent.title, text }),
+        onMessage: (agent, message) => {
+          indexAgentOutput({
+            root,
+            roomId: room.id,
+            agentName: agent.name,
+            agentTitle: agent.title,
+            output: message.body,
+            surface: "group",
+          })
+        },
+        shouldPause: () => live.pause,
+      })
+    } catch (error) {
+      emit({ type: "error", message: error instanceof Error ? error.message : "The group run failed" })
+    } finally {
+      gate.endRun(runId)
+      liveGroups.delete(slot)
+      sync()
+      res.end()
+    }
+  })
 }
 
 /** `shared`: group chat members all read the BRS, Figma and repos together. */

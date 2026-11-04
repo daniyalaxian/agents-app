@@ -2,7 +2,11 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
-export type MembershipRole = "admin" | "member" | "approver"
+import type { AppRole } from "./rbac.js"
+import { parseRole } from "./rbac.js"
+
+/** Workspace membership role (ENT-2). First registered user is owner. */
+export type MembershipRole = AppRole
 
 export type UserRecord = {
   id: string
@@ -49,7 +53,13 @@ export function readAuth(root: string): AuthStore {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as AuthStore
     return {
       workspaces: Array.isArray(raw.workspaces) ? raw.workspaces : [],
-      users: Array.isArray(raw.users) ? raw.users : [],
+      users: Array.isArray(raw.users)
+        ? raw.users.map((user) => ({
+            ...user,
+            // Legacy "admin" stays valid; unknown strings fall back to member.
+            role: (parseRole(user.role) ?? (user.role === "admin" ? "admin" : "member")) as MembershipRole,
+          }))
+        : [],
       bindings: Array.isArray(raw.bindings) ? raw.bindings : [],
     }
   } catch {
@@ -119,13 +129,28 @@ export function registerUser(
     passwordHash: hash,
     passwordSalt: salt,
     workspaceId: workspace.id,
-    role: "admin",
+    role: "owner",
     createdAt: new Date().toISOString(),
   }
   store.workspaces.push(workspace)
   store.users.push(user)
   writeAuth(root, store)
   return { user, workspace }
+}
+
+/** Owner/admin tooling and tests: change a user's role inside the same workspace. */
+export function setUserRole(root: string, userId: string, role: MembershipRole): UserRecord {
+  if (!parseRole(role)) throw new Error(`Unknown role: ${role}`)
+  const store = readAuth(root)
+  const user = store.users.find((item) => item.id === userId)
+  if (!user) throw new Error("User not found")
+  user.role = role
+  writeAuth(root, store)
+  return user
+}
+
+export function listWorkspaceUsers(root: string, workspaceId: string): UserRecord[] {
+  return readAuth(root).users.filter((user) => user.workspaceId === workspaceId)
 }
 
 export function loginUser(

@@ -1,8 +1,9 @@
 import { formatMemoryForPacket, indexAgentOutput, memoryEntriesForRoom } from "./memory.js"
 import { parseWritePlans, slugifyRequirement } from "./permissions.js"
-import type { StageRunner } from "./runner.js"
+import { buildPrompt, modelFor, type StageRunner } from "./runner.js"
 import type { RuntimeTools } from "./tools.js"
 import type { AgentFile, ChatMessage, Packet, PacketView, Room, SourceDoc, StageState } from "./types.js"
+import { estimateUsage } from "./usage.js"
 
 /** Set by server so room pipeline can index shared memory. */
 let memoryRoot: string | null = null
@@ -47,13 +48,7 @@ export function openRoom(agents: AgentFile[], requirement = REQUIREMENT, environ
     teamId: null,
     notes: [],
     messages: [humanMessage(trimmed)],
-    stages: agents.map((agent) => ({
-      name: agent.name,
-      title: agent.title,
-      status: "pending",
-      output: null,
-      agentId: null,
-    })),
+    stages: agents.map((agent) => emptyStage(agent)),
   }
 }
 
@@ -82,13 +77,18 @@ export function softResetRoom(room: Room, agents: AgentFile[], requirement?: str
     teamId: room.teamId ?? null,
     notes: [],
     messages: [humanMessage(nextReq)],
-    stages: agents.map((agent) => ({
-      name: agent.name,
-      title: agent.title,
-      status: "pending",
-      output: null,
-      agentId: null,
-    })),
+    stages: agents.map((agent) => emptyStage(agent)),
+  }
+}
+
+function emptyStage(agent: AgentFile): StageState {
+  return {
+    name: agent.name,
+    title: agent.title,
+    status: "pending",
+    output: null,
+    agentId: null,
+    usage: null,
   }
 }
 
@@ -121,10 +121,14 @@ export function recover(room: Room): Room {
     environmentId: room.environmentId ?? null,
     slot: room.slot ?? null,
   }
-  if (!withUrl.stages.some((stage) => stage.status === "running")) return withUrl
-  return {
+  const withUsage = {
     ...withUrl,
-    stages: withUrl.stages.map((stage) =>
+    stages: withUrl.stages.map((stage) => ({ ...stage, usage: stage.usage ?? null, agentId: stage.agentId ?? null })),
+  }
+  if (!withUsage.stages.some((stage) => stage.status === "running")) return withUsage
+  return {
+    ...withUsage,
+    stages: withUsage.stages.map((stage) =>
       stage.status === "running" ? { ...stage, status: "error", output: null } : stage,
     ),
     messages: [
@@ -183,6 +187,9 @@ export async function runUntilWait(
       )
       stage.output = result.output
       stage.agentId = result.agentId ?? null
+      stage.usage =
+        result.usage ??
+        estimateUsage(buildPrompt(packet, Boolean(hooks.toolsFor?.(next, agent))), result.output, modelFor(Boolean(agent.reasoning)).id)
       stage.status = agent.needsApproval ? "waiting_approval" : "done"
       const plans = parseWritePlans(result.output, {
         roleName: agent.name,

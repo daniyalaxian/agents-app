@@ -682,6 +682,43 @@ function buildDotState(stages) {
   return ""
 }
 
+function formatTokens(n) {
+  if (n < 1000) return String(n)
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
+function usageLine(usage) {
+  if (!usage) return ""
+  const mark = usage.source === "estimate" ? "~" : ""
+  const model = usage.model ? ` · ${escape(usage.model)}` : ""
+  return `<span class="usage">${mark}${formatTokens(usage.inputTokens)} in · ${mark}${formatTokens(usage.outputTokens)} out${model}</span>`
+}
+
+function renderRunUsage(stages) {
+  const bar = $("#run-usage")
+  if (!bar) return
+  const used = stages.filter((stage) => stage.usage)
+  if (!used.length) {
+    bar.hidden = true
+    bar.textContent = ""
+    return
+  }
+  let input = 0
+  let output = 0
+  let total = 0
+  let estimated = false
+  for (const stage of used) {
+    input += stage.usage.inputTokens
+    output += stage.usage.outputTokens
+    total += stage.usage.totalTokens
+    if (stage.usage.source === "estimate") estimated = true
+  }
+  const mark = estimated ? "~" : ""
+  bar.hidden = false
+  bar.textContent = `Run tokens: ${mark}${formatTokens(input)} in · ${mark}${formatTokens(output)} out · ${mark}${formatTokens(total)} total across ${used.length} stage${used.length === 1 ? "" : "s"}`
+}
+
 function renderComposer(handedOff, stages) {
   const waiting = stages.find((stage) => stage.status === "waiting_approval")
   const failed = stages.find((stage) => stage.status === "error")

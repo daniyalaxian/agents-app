@@ -1,12 +1,15 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { SDKAgent, ToolName } from "@cursor/sdk"
+import { formatSourcesForPrompt, summarizeHandoff } from "./packet.js"
 import { cursorCustomTools, TOOL_RULES, type RuntimeTools } from "./tools.js"
-import type { AgentFile, Packet, SourceDoc } from "./types.js"
+import type { AgentFile, Packet, SourceDoc, StageUsage } from "./types.js"
+import { estimateUsage, fromSdkUsage } from "./usage.js"
 
 export type RunOutput = {
   output: string
   agentId?: string
+  usage?: StageUsage
 }
 
 export type StageRunner = (
@@ -25,7 +28,8 @@ export function selectRunner(workdir: string): StageRunner {
     return async (packet, onDelta) => {
       const output = runLocal(packet)
       onDelta(output)
-      return { output }
+      const prompt = buildPrompt(packet)
+      return { output, usage: estimateUsage(prompt, output, modelFor(Boolean(packet.role.reasoning)).id) }
     }
   }
   return (packet, onDelta, tools) => runCursor(packet, onDelta, workdir, tools)
@@ -50,23 +54,24 @@ export function supportsRuntimeTools(): boolean {
   return engineName() === "cursor-local"
 }
 
+/**
+ * Build the model prompt (TOK-3/4/5/9).
+ * Stable prefix first (rules → role → project → requirement) so providers can cache it;
+ * volatile parts last (sources, notes, memory, prior summaries, DM).
+ * Prior outputs are summarized; full stage text stays on the room message.
+ */
 export function buildPrompt(packet: Packet, withTools = false): string {
   const notes = packet.notes.length > 0 ? packet.notes.map((note) => `- ${note}`).join("\n") : "None"
   const prior =
     packet.prior.length > 0
-      ? packet.prior.map((stage) => `## ${stage.title}\n${stage.output}`).join("\n\n")
+      ? packet.prior.map((stage) => `## ${stage.title}\n${summarizeHandoff(stage.output)}`).join("\n\n")
       : "None. This is the first role."
-
-  const sources =
-    packet.sources.length > 0
-      ? packet.sources
-          .map((source) => `## ${source.title}\nURL: ${source.url}\n\n${source.body}`)
-          .join("\n\n")
-      : "None."
+  const sources = formatSourcesForPrompt(packet.sources)
 
   const parts = [
+    // --- stable prefix (TOK-5) ---
     `You are the ${packet.role.title} in a room of separate roles.`,
-    "Reply with only this role's saved output. The next role will receive that text and nothing else from you.",
+    "Reply with only this role's saved output. The next role will receive a summary of that text.",
     "Do not create, edit, or delete files. Do not run commands.",
     "If a source does not contain the answer, record a gap and ask. Do not invent a business or technical requirement.",
     "Never mention access tokens, refresh tokens, API keys, or credentials.",
@@ -89,6 +94,54 @@ export function buildPrompt(packet: Packet, withTools = false): string {
     "# Requirement",
     packet.requirement,
     "",
+    // --- volatile suffix ---
+    "# Sources loaded for this role",
+    sources,
+    "",
+    "# Notes from the person",
+    notes,
+    "",
+    "# Shared project memory",
+    packet.memory || "None yet.",
+    "",
+    "# Earlier role outputs (hand-off summaries)",
+    prior,
+  ]
+  if (packet.dmHistory) {
+    parts.push("", "# Direct message thread with the person", packet.dmHistory)
+  }
+  return parts.join("\n")
+}
+
+/** Full prior text as before T2 — used only to measure savings in the walkthrough. */
+export function buildPromptLegacyFat(packet: Packet, withTools = false): string {
+  const notes = packet.notes.length > 0 ? packet.notes.map((note) => `- ${note}`).join("\n") : "None"
+  const prior =
+    packet.prior.length > 0
+      ? packet.prior.map((stage) => `## ${stage.title}\n${stage.output}`).join("\n\n")
+      : "None. This is the first role."
+  const sources =
+    packet.sources.length > 0
+      ? packet.sources.map((source) => `## ${source.title}\nURL: ${source.url}\n\n${source.body}`).join("\n\n")
+      : "None."
+  return [
+    `You are the ${packet.role.title} in a room of separate roles.`,
+    "Reply with only this role's saved output. The next role will receive that text and nothing else from you.",
+    "Do not create, edit, or delete files. Do not run commands.",
+    "If a source does not contain the answer, record a gap and ask. Do not invent a business or technical requirement.",
+    "Never mention access tokens, refresh tokens, API keys, or credentials.",
+    "Cite shared memory entries when you reuse a gap, decision, test, or approval.",
+    ...(withTools ? ["", TOOL_RULES] : []),
+    "",
+    "# Role instructions",
+    packet.role.instructions,
+    "",
+    "# Project file",
+    packet.projectMarkdown.trim(),
+    "",
+    "# Requirement",
+    packet.requirement,
+    "",
     "# Shared project memory",
     packet.memory || "None yet.",
     "",
@@ -100,11 +153,7 @@ export function buildPrompt(packet: Packet, withTools = false): string {
     "",
     "# Earlier role outputs",
     prior,
-  ]
-  if (packet.dmHistory) {
-    parts.push("", "# Direct message thread with the person", packet.dmHistory)
-  }
-  return parts.join("\n")
+  ].join("\n")
 }
 
 async function runCursor(
@@ -122,12 +171,13 @@ async function runCursor(
   const prompt = buildPrompt(packet, Boolean(liveTools))
   fs.writeFileSync(path.join(workdir, "last-prompt.md"), prompt)
 
+  const modelId = modelFor(Boolean(packet.role.reasoning)).id
   try {
     await using agent = await Agent.create({
-      ...agentOptions(key, packet.role.reasoning),
+      ...agentOptions(key, Boolean(packet.role.reasoning)),
       ...runtimeOptions(workdir, liveTools, codeDirs(packet.sources)),
     })
-    return await sendAndWait(agent, prompt, packet.role.name, onDelta)
+    return await sendAndWait(agent, prompt, packet.role.name, onDelta, modelId)
   } catch (error) {
     if (error instanceof CursorAgentError) {
       throw new Error(`Cursor did not start: ${error.message}`)
@@ -158,7 +208,8 @@ export function selectTurnRunner(workdir: string): TurnRunner {
   if (!apiKey()) {
     return async (input, onDelta) => {
       onDelta(input.draft)
-      return { output: input.draft }
+      const prompt = await input.fullPrompt()
+      return { output: input.draft, usage: estimateUsage(prompt, input.draft, modelFor(Boolean(input.role.reasoning)).id) }
     }
   }
   return (input, onDelta) => runCursorTurn(input, onDelta, workdir)
@@ -171,13 +222,15 @@ async function runCursorTurn(input: TurnInput, onDelta: (text: string) => void, 
   fs.mkdirSync(workdir, { recursive: true })
   const { Agent, CursorAgentError } = await import("@cursor/sdk")
   const liveTools = input.tools && supportsRuntimeTools() ? input.tools : undefined
-  const options = { ...agentOptions(key, input.role.reasoning), ...runtimeOptions(workdir, liveTools, input.dirs) }
+  const modelId = modelFor(Boolean(input.role.reasoning)).id
+  const options = { ...agentOptions(key, Boolean(input.role.reasoning)), ...runtimeOptions(workdir, liveTools, input.dirs) }
 
   try {
     if (input.agentId) {
       try {
         await using resumed = await Agent.resume(input.agentId, options)
-        return await sendAndWait(resumed, input.followUp, input.role.name, onDelta)
+        // Follow-up prompt is short; still count its chars for the turn.
+        return await sendAndWait(resumed, input.followUp, input.role.name, onDelta, modelId)
       } catch (error) {
         // The local agent store may have lost it; start fresh with the full transcript.
         console.warn(`cursor resume failed role=${input.role.name}: ${error instanceof Error ? error.message : error}`)
@@ -186,7 +239,7 @@ async function runCursorTurn(input: TurnInput, onDelta: (text: string) => void, 
     const prompt = await input.fullPrompt()
     fs.writeFileSync(path.join(workdir, `last-prompt-${input.role.name}.md`), prompt)
     await using agent = await Agent.create(options)
-    return await sendAndWait(agent, prompt, input.role.name, onDelta)
+    return await sendAndWait(agent, prompt, input.role.name, onDelta, modelId)
   } catch (error) {
     if (error instanceof CursorAgentError) {
       throw new Error(`Cursor did not start: ${error.message}`)
@@ -228,6 +281,7 @@ async function sendAndWait(
   prompt: string,
   roleName: string,
   onDelta: (text: string) => void,
+  modelId: string,
 ): Promise<RunOutput> {
   let streamed = ""
   const run = await agent.send(prompt, {
@@ -248,7 +302,15 @@ async function sendAndWait(
   }
   const output = (result.result ?? streamed).trim()
   if (!output) throw new Error(`Cursor run ${run.id} returned an empty reply`)
-  return { output, agentId: agent.agentId }
+  const usage = result.usage
+    ? fromSdkUsage(prompt, modelId, result.usage)
+    : estimateUsage(prompt, output, modelId)
+  if (result.usage) {
+    console.log(
+      `cursor role=${roleName} tokens in=${usage.inputTokens} out=${usage.outputTokens} total=${usage.totalTokens} model=${modelId}`,
+    )
+  }
+  return { output, agentId: agent.agentId, usage }
 }
 
 /** Code snapshot folders the agent may read with its read/grep/glob tools. */

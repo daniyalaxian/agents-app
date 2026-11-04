@@ -111,7 +111,11 @@ export function readRoom(root: string, slot: string | null = activeSlot(root)): 
   }
   const room = normalizeRoom(raw)
   room.slot = slot
-  room.stages = room.stages.map((stage) => ({ ...stage, agentId: stage.agentId ?? null }))
+  room.stages = room.stages.map((stage) => ({
+    ...stage,
+    agentId: stage.agentId ?? null,
+    usage: stage.usage ?? null,
+  }))
   return room
 }
 
@@ -188,6 +192,13 @@ export function normalizeRoom(room: Room & { gitRepoUrl?: string | null; gitBran
     teamId: room.teamId ?? null,
     environmentId: room.environmentId ?? null,
     slot: room.slot ?? null,
+    stages: Array.isArray(room.stages)
+      ? room.stages.map((stage) => ({
+          ...stage,
+          usage: stage.usage ?? null,
+          agentId: stage.agentId ?? null,
+        }))
+      : [],
   }
 }
 
