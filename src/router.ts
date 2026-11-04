@@ -202,6 +202,8 @@ export async function runUntilWait(
       next.messages.push(agentMessage(agent, result.output, packetView(packet), result.agentId))
       hooks.onRoom?.(clone(next))
       if (agent.needsApproval) return next
+      applySkips(next, agent)
+      hooks.onRoom?.(clone(next))
     } catch (error) {
       stage.status = "error"
       stage.output = null
@@ -228,6 +230,8 @@ export async function approveAndContinue(
   const stage = next.stages.find((item) => item.name === waiting.name)
   if (!stage) throw new Error("Nothing is waiting for approval")
   stage.status = "done"
+  const approvedAgent = agents.find((item) => item.name === stage.name)
+  if (approvedAgent) applySkips(next, approvedAgent)
 
   const trimmed = note?.trim()
   if (trimmed) next.notes.push(trimmed)
@@ -255,6 +259,42 @@ export async function retry(
   }
   hooks.onRoom?.(clone(next))
   return runUntilWait(next, agents, projectMarkdown, runner, hooks)
+}
+
+/** The last `VERDICT: word` line in an agent's reply, lower-cased, or null. */
+export function verdictOf(output: string): string | null {
+  let found: string | null = null
+  for (const match of output.matchAll(/^[ \t>*_-]*VERDICT[ \t*_]*:[ \t*_`]*([A-Za-z0-9_-]{1,20})/gim)) found = match[1].toLowerCase()
+  return found
+}
+
+/**
+ * After an agent is done, jumps ahead if its verdict matches one of its skip rules: the agents in between are marked
+ * skipped. No verdict, or a word no rule asks for, skips nothing, so the run carries on as normal.
+ */
+export function applySkips(room: Room, agent: AgentFile): void {
+  if (!agent.skipIf?.length) return
+  const from = room.stages.findIndex((stage) => stage.name === agent.name)
+  const output = room.stages[from]?.output
+  if (from === -1 || !output) return
+  const verdict = verdictOf(output)
+  const note = (body: string) =>
+    room.messages.push({ id: crypto.randomUUID(), kind: "agent", title: "Room", body, at: new Date().toISOString() })
+  if (!verdict) {
+    note(`${agent.title} gave no VERDICT line, so nothing was skipped.`)
+    return
+  }
+  const rule = agent.skipIf.find((item) => item.verdict === verdict)
+  if (!rule) return
+  const to = room.stages.findIndex((stage) => stage.name === rule.to)
+  if (to <= from) return
+  const skipped: string[] = []
+  for (let index = from + 1; index < to; index++) {
+    if (room.stages[index].status !== "pending") continue
+    room.stages[index].status = "skipped"
+    skipped.push(room.stages[index].title)
+  }
+  if (skipped.length) note(`${agent.title} said VERDICT: ${verdict}, so ${skipped.join(", ")} ${skipped.length === 1 ? "was" : "were"} skipped. Continuing at ${room.stages[to].title}.`)
 }
 
 function finishedOutputs(stages: StageState[]): { title: string; output: string }[] {

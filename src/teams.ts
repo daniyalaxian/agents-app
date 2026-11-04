@@ -2,7 +2,7 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { prebuiltAgents } from "./catalog.js"
-import { compileGraph, linearGraph, type AutomationGraph } from "./graph.js"
+import { compileGraph, linearGraph, type AutomationGraph, type SkipRule } from "./graph.js"
 
 export type TeamRecord = {
   id: string
@@ -16,6 +16,8 @@ export type TeamRecord = {
   graph?: AutomationGraph
   /** Agents that hold the kickoff discussion together. Empty or missing: the built-in SDLC trio, if the team has them. */
   swarmNames?: string[]
+  /** Skip-ahead rules compiled from the canvas. */
+  skips?: SkipRule[]
   isDefault: boolean
   createdAt: string
   updatedAt: string
@@ -91,12 +93,13 @@ export function createTeam(
     approvalMap?: Record<string, boolean>
     graph?: AutomationGraph
     swarmNames?: string[]
+    skips?: SkipRule[]
   },
 ): TeamRecord {
   if (!input.name.trim()) throw new Error("Team name required")
   if (input.graph) {
     const compiled = compileGraph(input.graph)
-    input = { ...input, agentNames: compiled.agentNames, approvalMap: compiled.approvalMap, swarmNames: compiled.swarmNames }
+    input = { ...input, agentNames: compiled.agentNames, approvalMap: compiled.approvalMap, swarmNames: compiled.swarmNames, skips: compiled.skips }
   }
   if (!input.agentNames?.length) throw new Error("Pick at least one agent")
 
@@ -110,6 +113,7 @@ export function createTeam(
     approvalMap: input.approvalMap || {},
     ...(input.graph ? { graph: input.graph } : {}),
     ...(input.swarmNames?.length ? { swarmNames: input.swarmNames } : {}),
+    ...(input.skips?.length ? { skips: input.skips } : {}),
     isDefault: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -138,12 +142,15 @@ export function updateTeam(
     team.approvalMap = compiled.approvalMap
     if (compiled.swarmNames.length) team.swarmNames = compiled.swarmNames
     else delete team.swarmNames
+    if (compiled.skips.length) team.skips = compiled.skips
+    else delete team.skips
   } else {
     if (patch.agentNames !== undefined) {
       if (!patch.agentNames.length) throw new Error("Pick at least one agent")
       team.agentNames = patch.agentNames
       delete team.graph // the list changed, so the old canvas no longer matches
       delete team.swarmNames
+      delete team.skips
     }
     if (patch.approvalMap !== undefined) {
       team.approvalMap = patch.approvalMap
@@ -172,4 +179,9 @@ export function teamGraph(team: TeamRecord): AutomationGraph {
 /** Agents the team's canvas marks for the high-reasoning model. */
 export function teamReasoning(team: TeamRecord): string[] {
   return team.graph?.nodes.filter((node) => node.reasoning).map((node) => node.agent) ?? []
+}
+
+/** Skip-ahead rules the team's canvas defines. */
+export function teamSkips(team: TeamRecord): SkipRule[] {
+  return team.skips ?? []
 }

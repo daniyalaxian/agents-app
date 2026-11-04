@@ -18,7 +18,14 @@ export type GraphNode = {
   y: number
 }
 
-export type GraphEdge = { from: string; to: string }
+/**
+ * A plain edge joins two agents in order. An edge with `when` is a skip: if the agent at `from` ends its reply with
+ * `VERDICT: <when>`, the run jumps ahead to `to` and the agents between are skipped.
+ */
+export type GraphEdge = { from: string; to: string; when?: string }
+
+/** The compiled form of a skip edge, by agent name. */
+export type SkipRule = { after: string; verdict: string; to: string }
 
 export type AutomationGraph = { nodes: GraphNode[]; edges: GraphEdge[] }
 
@@ -56,10 +63,18 @@ export function parseGraph(value: unknown): AutomationGraph {
       y: Number.isFinite(item.y) ? Number(item.y) : 0,
     }
   })
-  const edges: GraphEdge[] = raw.edges.map((item: Record<string, unknown>) => ({
-    from: typeof item?.from === "string" ? item.from : "",
-    to: typeof item?.to === "string" ? item.to : "",
-  }))
+  const edges: GraphEdge[] = raw.edges.map((item: Record<string, unknown>) => {
+    const edge: GraphEdge = {
+      from: typeof item?.from === "string" ? item.from : "",
+      to: typeof item?.to === "string" ? item.to : "",
+    }
+    if (typeof item?.when === "string" && item.when.trim()) {
+      const when = item.when.trim().toLowerCase()
+      if (!/^[a-z0-9_-]{1,20}$/.test(when)) throw new Error("A skip word can use letters, numbers, - and _ (up to 20)")
+      edge.when = when
+    }
+    return edge
+  })
   return { nodes, edges }
 }
 
@@ -72,8 +87,11 @@ export function compileGraph(graph: AutomationGraph): {
   agentNames: string[]
   approvalMap: Record<string, boolean>
   swarmNames: string[]
+  skips: SkipRule[]
 } {
-  const { nodes, edges } = graph
+  const { nodes } = graph
+  const edges = graph.edges.filter((edge) => !edge.when)
+  const skipEdges = graph.edges.filter((edge) => edge.when)
   if (!nodes.length) throw new Error("Add at least one agent to the automation")
   const byId = new Map<string, GraphNode>()
   for (const node of nodes) {
@@ -110,6 +128,21 @@ export function compileGraph(graph: AutomationGraph): {
   }
   if (order.length !== nodes.length) throw new Error("Connect every agent into one chain")
 
+  const position = new Map(order.map((node, index) => [node.id, index]))
+  const skips: SkipRule[] = []
+  const seenSkip = new Set<string>()
+  for (const edge of skipEdges) {
+    const from = position.get(edge.from)
+    const to = position.get(edge.to)
+    if (from === undefined || to === undefined) throw new Error("A skip points at an agent that does not exist")
+    if (to <= from + 1) throw new Error("A skip must jump ahead past at least one agent")
+    if (order[from].swarm) throw new Error("A discussion agent cannot have a skip: the discussion hands off all at once")
+    const key = `${edge.from}:${edge.when}`
+    if (seenSkip.has(key)) throw new Error(`${order[from].agent} already skips on "${edge.when}"`)
+    seenSkip.add(key)
+    skips.push({ after: order[from].agent, verdict: edge.when as string, to: order[to].agent })
+  }
+
   // The discussion hands off to the agents after it, so its members must be the first ones in the chain.
   const swarmNames = order.filter((node) => node.swarm).map((node) => node.agent)
   if (swarmNames.length === 1) throw new Error("A discussion needs at least two agents. Mark another, or untick this one.")
@@ -118,6 +151,7 @@ export function compileGraph(graph: AutomationGraph): {
   }
 
   return {
+    skips,
     swarmNames,
     agentNames: order.map((node) => node.agent),
     approvalMap: Object.fromEntries(order.map((node) => [node.agent, node.approval])),

@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { loadAgents, parseAgent } from "./agents.js"
+import type { SkipRule } from "./graph.js"
 import type { AgentFile } from "./types.js"
 
 export type CatalogAgent = AgentFile & {
@@ -235,6 +236,7 @@ export function resolveTeamAgents(
   agentNames: string[],
   approvalMap?: Record<string, boolean>,
   reasoning: string[] = [],
+  skips: SkipRule[] = [],
 ): AgentFile[] {
   const catalog = listCatalog(root, workspaceId)
   const byName = new Map(catalog.map((agent) => [agent.name, agent]))
@@ -254,6 +256,7 @@ export function resolveTeamAgents(
       kitDirs: agent.kitDirs,
       toolkit: agent.toolkit,
       ...(reasoning.includes(name) ? { reasoning: true } : {}),
+      ...(skips.some((rule) => rule.after === name) ? { skipIf: skips.filter((rule) => rule.after === name) } : {}),
     })
   }
   if (!resolved.length) throw new Error("Team has no agents")

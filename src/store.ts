@@ -116,7 +116,7 @@ export function listRoomSummaries(root: string): RoomSummary[] {
           ? "waiting"
           : statuses.includes("error")
             ? "error"
-            : statuses.length && statuses.every((status) => status === "done")
+            : statuses.length && statuses.every((status) => status === "done" || status === "skipped")
               ? "done"
               : "new"
       summaries.push({

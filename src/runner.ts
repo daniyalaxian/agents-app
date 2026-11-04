@@ -76,6 +76,13 @@ export function buildPrompt(packet: Packet, withTools = false): string {
     "# Role instructions",
     packet.role.instructions,
     "",
+    ...(packet.role.skipIf?.length
+      ? [
+          "# Verdict line",
+          `End your reply with one last line in exactly this form: VERDICT: <word>. Use ${packet.role.skipIf.map((rule) => `"${rule.verdict}"`).join(" or ")} only when it truly applies; it makes the run skip ahead. Otherwise use VERDICT: continue.`,
+          "",
+        ]
+      : []),
     "# Project file",
     packet.projectMarkdown.trim(),
     "",

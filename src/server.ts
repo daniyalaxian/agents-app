@@ -30,6 +30,7 @@ import {
   updateTeam,
   teamGraph,
   teamReasoning,
+  teamSkips,
 } from "./teams.js"
 import { parseGraph } from "./graph.js"
 import { setupChecklist } from "./setup.js"
@@ -511,7 +512,7 @@ app.post("/api/room/team", (req, res) => {
       res.status(403).json({ error: "Team not in your workspace" })
       return
     }
-    const swarm = resolveTeamAgents(root, userScope(user), team.agentNames, team.approvalMap, teamReasoning(team))
+    const swarm = resolveTeamAgents(root, userScope(user), team.agentNames, team.approvalMap, teamReasoning(team), teamSkips(team))
     room.teamId = team.id
     room.stages = swarm.map((agent) => ({
       name: agent.name,
@@ -1851,7 +1852,7 @@ function present(room: Room) {
 function roomAgents(room: Room | null, workspaceId: string | null, environmentId: string | null = room?.environmentId ?? null) {
   const team =
     (room?.teamId && getTeam(root, room.teamId)) || ensureDefaultTeam(root)
-  return resolveTeamAgents(root, scopeFor(workspaceId, environmentId), team.agentNames, team.approvalMap, teamReasoning(team))
+  return resolveTeamAgents(root, scopeFor(workspaceId, environmentId), team.agentNames, team.approvalMap, teamReasoning(team), teamSkips(team))
 }
 
 function finishedStageOutputs(room: Room): { title: string; output: string }[] {

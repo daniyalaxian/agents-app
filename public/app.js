@@ -664,7 +664,7 @@ function buildDotState(stages) {
   if (streaming || stages.some((stage) => stage.status === "running")) return "talking"
   if (stages.some((stage) => stage.status === "error")) return "error"
   if (stages.some((stage) => stage.status === "waiting_approval")) return "waiting"
-  if (stages.length && stages.every((stage) => stage.status === "done")) return "done"
+  if (stages.length && stages.every((stage) => stage.status === "done" || stage.status === "skipped")) return "done"
   return ""
 }
 
@@ -672,7 +672,7 @@ function renderComposer(handedOff, stages) {
   const waiting = stages.find((stage) => stage.status === "waiting_approval")
   const failed = stages.find((stage) => stage.status === "error")
   const writing = stages.find((stage) => stage.status === "running")
-  const finished = stages.every((stage) => stage.status === "done")
+  const finished = stages.every((stage) => stage.status === "done" || stage.status === "skipped")
 
   if (!handedOff) {
     composer.innerHTML = `<p>Finish the kickoff discussion first.</p><button type="submit">Go to Kickoff</button>`
@@ -1148,7 +1148,7 @@ teamCreate.addEventListener("submit", async (event) => {
 
 const NODE_W = 250
 const NODE_H = 70
-const builder = { nodes: [], edges: [], editingId: null, connectFrom: null, agents: [] }
+const builder = { nodes: [], edges: [], editingId: null, connectFrom: null, skipFrom: null, agents: [] }
 const builderCanvas = $("#builder-canvas")
 const builderEdges = $("#builder-edges")
 const builderPreview = $("#builder-preview")
@@ -1163,6 +1163,7 @@ function builderReset(graph, teamId, name) {
   builder.edges = graph ? graph.edges.map((edge) => ({ ...edge })) : []
   builder.editingId = teamId || null
   builder.connectFrom = null
+  builder.skipFrom = null
   $("#builder-name").value = name || ""
   builderSay("")
   renderBuilder()
@@ -1172,14 +1173,14 @@ function renderBuilder() {
   for (const el of builderCanvas.querySelectorAll(".bnode")) el.remove()
   for (const node of builder.nodes) {
     const el = document.createElement("div")
-    el.className = "bnode" + (builder.connectFrom === node.id ? " connecting" : "")
+    el.className = "bnode" + (builder.connectFrom === node.id || builder.skipFrom === node.id ? " connecting" : "")
     el.dataset.id = node.id
     el.style.left = node.x + "px"
     el.style.top = node.y + "px"
     const agent = builder.agents.find((item) => item.name === node.agent)
     el.innerHTML =
       `<div class="bn-row"><strong>${escape(agent?.title || node.agent)}</strong><button type="button" data-del title="Remove">×</button></div>` +
-      `<div class="bn-row"><label title="Pause for your OK after this agent"><input type="checkbox" data-ok ${node.approval ? "checked" : ""} /> OK</label><label title="Takes part in the kickoff discussion"><input type="checkbox" data-swarm ${node.swarm ? "checked" : ""} /> Discuss</label><label title="Use the stronger reasoning model for this agent (costs more)"><input type="checkbox" data-deep ${node.reasoning ? "checked" : ""} /> Deep</label><button type="button" data-link title="Connect to the next agent">●</button></div>`
+      `<div class="bn-row"><label title="Pause for your OK after this agent"><input type="checkbox" data-ok ${node.approval ? "checked" : ""} /> OK</label><label title="Takes part in the kickoff discussion"><input type="checkbox" data-swarm ${node.swarm ? "checked" : ""} /> Discuss</label><label title="Use the stronger reasoning model for this agent (costs more)"><input type="checkbox" data-deep ${node.reasoning ? "checked" : ""} /> Deep</label><span><button type="button" data-skip title="Skip ahead from here: click this, then a later agent, and name the verdict">↷</button><button type="button" data-link title="Connect to the next agent">●</button></span></div>`
     builderCanvas.append(el)
   }
   drawBuilderEdges()
@@ -1192,13 +1193,21 @@ function drawBuilderEdges() {
       const a = find(edge.from)
       const b = find(edge.to)
       if (!a || !b) return ""
+      if (edge.when) {
+        const x1 = a.x + NODE_W / 2
+        const x2 = b.x + NODE_W / 2
+        const y = Math.min(a.y, b.y)
+        const control = Math.max(2, y - 70) // the arc peaks halfway between the nodes' tops and this
+        const apex = (y + control) / 2
+        return `<path class="skip" data-edge="${index}" d="M ${x1} ${a.y} Q ${(x1 + x2) / 2} ${control} ${x2} ${b.y}"><title>Skips to ${escape(find(edge.to).agent)} on VERDICT: ${escape(edge.when)}. Click to remove.</title></path><text class="skip-label" x="${(x1 + x2) / 2}" y="${Math.max(11, apex - 6)}" text-anchor="middle">${escape(edge.when)}</text>`
+      }
       return `<line data-edge="${index}" x1="${a.x + NODE_W}" y1="${a.y + NODE_H / 2}" x2="${b.x}" y2="${b.y + NODE_H / 2}"><title>Click to remove</title></line>`
     })
     .join("")
 }
 
 function builderTail() {
-  const withNext = new Set(builder.edges.map((edge) => edge.from))
+  const withNext = new Set(builder.edges.filter((edge) => !edge.when).map((edge) => edge.from))
   return builder.nodes.find((node) => !withNext.has(node.id))
 }
 
@@ -1245,10 +1254,25 @@ builderCanvas.addEventListener("click", (event) => {
   }
   if (event.target.closest("[data-link]")) {
     builder.connectFrom = builder.connectFrom === id ? null : id
+    builder.skipFrom = null
+    return renderBuilder()
+  }
+  if (event.target.closest("[data-skip]")) {
+    builder.skipFrom = builder.skipFrom === id ? null : id
+    builder.connectFrom = null
+    builderSay(builder.skipFrom ? "Now click the later agent to jump to." : "")
+    return renderBuilder()
+  }
+  if (builder.skipFrom && builder.skipFrom !== id) {
+    const word = (window.prompt("Skip to this agent when the verdict is (one word, e.g. fail):") || "").trim().toLowerCase()
+    const from = builder.skipFrom
+    builder.skipFrom = null
+    if (word) builder.edges.push({ from, to: id, when: word })
+    builderSay(word ? "Skip added. Saving checks that it jumps ahead." : "")
     return renderBuilder()
   }
   if (builder.connectFrom && builder.connectFrom !== id) {
-    builder.edges = builder.edges.filter((edge) => edge.from !== builder.connectFrom)
+    builder.edges = builder.edges.filter((edge) => edge.from !== builder.connectFrom || edge.when)
     builder.edges.push({ from: builder.connectFrom, to: id })
     builder.connectFrom = null
     renderBuilder()
@@ -1738,6 +1762,7 @@ function label(status) {
   if (status === "running") return "Working"
   if (status === "error") return "Problem"
   if (status === "done") return "Done"
+  if (status === "skipped") return "Skipped"
   return "Next"
 }
 

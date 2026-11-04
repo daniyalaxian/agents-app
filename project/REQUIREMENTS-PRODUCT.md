@@ -429,7 +429,7 @@ Recommended build order: **B (import spike) → A → B (finish: environment sco
 | **C – Create agent UX** | Built | Paste markdown to create an agent (`POST /api/catalog/create`, `createAgentFromMarkdown`); write tools force the OK gate; kit_dirs/toolkit cannot be set by a paste | Paste-to-update an existing agent; import from a file or URL |
 | **E – Swarm as node** | Not started | Kickoff group chat with fixed members | Swarm node with chosen members on the canvas |
 | **G – Cost defaults** | Built | `CURSOR_MODEL` is the low-cost default; `CURSOR_REASONING_MODEL` (+ optional `CURSOR_REASONING_PARAMS`) is used only by agents ticked Deep on the canvas; unset means no switch; Help shows the models in use | Cost totals per run; per-agent model picker |
-| **H – Branches** | Not started | | Conditions and skip paths |
+| **H – Branches** | Built (skips) | Skip edges on the canvas: an agent ending with `VERDICT: <word>` makes the run jump ahead and mark the agents between as skipped; a missing or unmatched verdict skips nothing; applied after approval for gated agents | True branching (two live paths) and merges; conditions on anything other than a verdict line |
 
 New routes: `GET/POST /api/environments`, `POST /api/environments/:id/rooms`, `POST /api/environments/:id/repos-from-room`, `POST /api/rooms/:slot/open`, `POST /api/toolkits/axian/import`, `GET /api/setup-check`. `GET/POST /api/teams` now carry a `graph`.
 Builder note: automations are stored as a **graph** from the first slice (AU-1), even while early UI shows them as a list, so the drag-and-drop canvas (D) is a new view of the same data, not a migration.

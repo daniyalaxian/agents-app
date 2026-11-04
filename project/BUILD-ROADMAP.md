@@ -341,7 +341,8 @@
 ### 9.3 Builder (D)
 - [x] Automation = graph; compiled to the ordered list the engine runs
 - [x] Canvas: add, drag, connect, remove, per-node approval, edit saved teams
-- [ ] Branches and conditions
+- [x] Skip-ahead edges on a verdict line (`VERDICT: word`)
+- [ ] True branches and merges
 - [ ] Swarm node (replace the fixed kickoff members)
 
 ### 9.4 Guide (F)

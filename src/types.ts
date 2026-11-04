@@ -1,3 +1,4 @@
+import type { SkipRule } from "./graph.js"
 export type AgentFile = {
   name: string
   title: string
@@ -13,9 +14,11 @@ export type AgentFile = {
   toolkit?: string
   /** Use the high-reasoning model for this agent (set per node in the builder). */
   reasoning?: boolean
+  /** Verdict rules from the team's canvas: skip ahead when this agent ends with a matching VERDICT line. */
+  skipIf?: SkipRule[]
 }
 
-export type StageStatus = "pending" | "running" | "waiting_approval" | "done" | "error"
+export type StageStatus = "pending" | "running" | "waiting_approval" | "done" | "error" | "skipped"
 
 export type StageState = {
   name: string

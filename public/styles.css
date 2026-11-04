@@ -1226,3 +1226,7 @@ details summary {
 .check-item dl { margin: 6px 0 0; font-size: 12px; }
 .check-item dt { color: var(--faint); margin-top: 4px; }
 .check-item dd { margin: 0; display: flex; gap: 6px; align-items: center; word-break: break-all; }
+
+.builder-edges path.skip { fill: none; stroke: var(--accent, #3b6ef5); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: stroke; cursor: pointer; }
+.builder-edges path.skip:hover { stroke: #c0392b; }
+.builder-edges .skip-label { fill: var(--accent, #3b6ef5); font-size: 11px; }

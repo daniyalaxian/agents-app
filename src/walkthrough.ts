@@ -4,7 +4,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadAgents } from "./agents.js"
 import { decryptJson, encryptJson, loadSecrets, sealed, unseal } from "./crypto.js"
-import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, softResetRoom } from "./router.js"
+import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, softResetRoom, verdictOf } from "./router.js"
+import type { AgentFile } from "./types.js"
 import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from "./environments.js"
 import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
@@ -486,6 +487,63 @@ assert(teamReasoning(deepTeam).join() === "coding", "the canvas marks reach the 
 const deepAgents = resolveTeamAgents(teamRoot, null, ["sa", "coding"], deepTeam.approvalMap, teamReasoning(deepTeam))
 assert(deepAgents[1].reasoning === true && deepAgents[0].reasoning === undefined, "only the marked agent runs deep")
 assert(parseGraph(deepGraph).nodes[1].reasoning === true, "the mark survives saving")
+
+// Branches: a skip edge jumps ahead on a VERDICT line; anything unclear carries on as normal.
+assert(verdictOf("all good\nVERDICT: Fail") === "fail", "the verdict is read case-insensitively")
+assert(verdictOf("**VERDICT: pass**") === "pass" && verdictOf("> verdict : pass\nlater\nVERDICT: fail") === "fail", "bold and quoted forms work and the last line wins")
+assert(verdictOf("the verdict was bad") === null && verdictOf("VERDICT:") === null, "prose is not a verdict")
+const skipGraph = linearGraph(["sa", "coding", "devops", "deploy"])
+const withSkip = (edge: { from: string; to: string; when?: string }) => ({ nodes: skipGraph.nodes, edges: [...skipGraph.edges, edge] })
+const compiledSkip = compileGraph(withSkip({ from: "n1", to: "n4", when: "fail" }))
+assert(compiledSkip.agentNames.join() === "sa,coding,devops,deploy" && compiledSkip.skips[0].after === "sa" && compiledSkip.skips[0].to === "deploy", "a skip edge does not change the order")
+assert(graphError(withSkip({ from: "n1", to: "n2", when: "fail" })).includes("past at least one"), "a skip to the next agent is pointless and refused")
+assert(graphError(withSkip({ from: "n3", to: "n1", when: "fail" })).includes("ahead"), "a skip cannot go backwards")
+assert(graphError({ nodes: skipGraph.nodes, edges: [...skipGraph.edges, { from: "n1", to: "n3", when: "fail" }, { from: "n1", to: "n4", when: "fail" }] }).includes("already skips"), "one verdict cannot lead two places")
+let badWord = ""
+try {
+  parseGraph({ nodes: [], edges: [{ from: "a", to: "b", when: "no spaces allowed!" }] })
+} catch (error) {
+  badWord = error instanceof Error ? error.message : ""
+}
+assert(badWord.includes("skip word"), "a skip word is limited to simple characters")
+const discussGraph = linearGraph(["sa", "coding", "devops", "deploy"])
+discussGraph.nodes[0].swarm = true
+discussGraph.nodes[1].swarm = true
+assert(graphError({ nodes: discussGraph.nodes, edges: [...discussGraph.edges, { from: "n1", to: "n4", when: "x" }] }).includes("discussion agent"), "discussion agents cannot skip")
+
+const skipAgents: AgentFile[] = ["sa", "coding", "devops", "deploy"].map((name) => ({
+  name,
+  title: name.toUpperCase(),
+  needsApproval: false,
+  file: name + ".md",
+  instructions: "x",
+  draft: "d",
+  ...(name === "sa" ? { skipIf: [{ after: "sa", verdict: "fail", to: "deploy" }] } : {}),
+}))
+const verdictPrompt = buildPrompt({ requirement: "r", projectMarkdown: "p", role: skipAgents[0], prior: [], notes: [], sources: [], memory: "" })
+assert(verdictPrompt.includes("VERDICT: <word>") && verdictPrompt.includes('"fail"'), "an agent with a skip is asked for a verdict line")
+assert(!buildPrompt({ requirement: "r", projectMarkdown: "p", role: skipAgents[1], prior: [], notes: [], sources: [], memory: "" }).includes("VERDICT"), "other agents are not")
+const runWith = async (saSays: string) => {
+  const ran: string[] = []
+  const done = await runUntilWait(openRoom(skipAgents, "skips"), skipAgents, "p", async (packet) => {
+    ran.push(packet.role.name)
+    return { output: packet.role.name === "sa" ? saSays : "ok" }
+  })
+  return { ran, done }
+}
+const failed = await runWith("looks bad\nVERDICT: fail")
+assert(failed.ran.join() === "sa,deploy", `a matching verdict skips the agents in between, ran: ${failed.ran}`)
+assert(failed.done.stages.map((stage) => stage.status).join() === "done,skipped,skipped,done", "skipped agents are marked skipped")
+assert(failed.done.messages.some((message) => message.body.includes("DEVOPS") && message.body.includes("were skipped")), "the room says what was skipped and why")
+assert(!failed.done.stages.some((stage) => stage.status === "skipped" && stage.output), "a skipped agent has no output to hand on")
+assert((await runWith("fine\nVERDICT: continue")).ran.length === 4, "a verdict nobody asked for skips nothing")
+const silent = await runWith("no verdict here")
+assert(silent.ran.length === 4 && silent.done.messages.some((message) => message.body.includes("no VERDICT line")), "a missing verdict skips nothing and says so")
+const gated = skipAgents.map((agent, index) => (index === 0 ? { ...agent, needsApproval: true } : agent))
+const held = await runUntilWait(openRoom(gated, "gated skips"), gated, "p", async (packet) => ({ output: packet.role.name === "sa" ? "VERDICT: fail" : "ok" }))
+assert(held.stages[1].status === "pending", "nothing is skipped until the person approves the gated agent")
+const resumed = await approveAndContinue(held, gated, "p", async () => ({ output: "ok" }))
+assert(resumed.stages.map((stage) => stage.status).join() === "done,skipped,skipped,done", "approving applies the skip, then the run continues")
 
 // A team chooses who holds the kickoff discussion (swarm node).
 const withSwarm = (flags: boolean[]) => {
