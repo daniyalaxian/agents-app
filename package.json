@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "check": "tsx src/walkthrough.ts"
+    "check": "tsx src/walkthrough.ts && tsx src/data/data.check.ts"
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.36",
