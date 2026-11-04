@@ -417,6 +417,21 @@ Accepted when:
 Recommended build order: **B (import spike) → A → B (finish: environment scope) → D → F → C → E → G → H**  
 (D5: the import spike runs first on today’s workspace catalog; then environments; then import moves to environment scope. Import and builder land early so Axian conversion is real, not a stub list.)
 
+### 9.1 Build status (2026-11-04, branch `sdlc-automation`)
+
+| Slice | State | What exists | Not yet |
+| --- | --- | --- | --- |
+| **B1 – Axian import spike** | Built | `src/toolkit.ts` adapter, `POST /api/toolkits/axian/import`, per-agent `sources` scoping (`src/scope.ts`), import form in Team & agents | Live run of an imported agent with a model key |
+| **A – Environments, rooms** | Built | `src/environments.ts`, one file per room under `data/rooms/`, environment switcher and room list in the sidebar, environment-prefixed room ids | Per-session active room; per-room run lock (global `busy` remains); Home screen |
+| **B2 – Environment scope** | Built | Custom agents and teams keyed by `scopeFor(workspaceId, environmentId)`; Default keeps the workspace-level ones | Sharing or copying agents between environments; per-agent overwrite policy on re-import |
+| **D – Builder** | Built (chains) | `src/graph.ts`; teams carry a graph that compiles to the ordered list; canvas in Team & agents with drag, connect, per-node approval | Branches and conditions (H); a Human-approve node type separate from an agent's gate; run-from-canvas progress |
+| **F – Guide** | Built | Help tab: first-5-minutes guide and live setup checklist with redirect URL and scopes (`src/setup.ts`, `GET /api/setup-check`) | Home empty-state CTAs (HG-3) |
+| **C – Create agent UX** | Not started | Existing duplicate-and-edit form | Paste-markdown create/edit |
+| **E – Swarm as node** | Not started | Kickoff group chat with fixed members | Swarm node with chosen members on the canvas |
+| **G – Cost defaults** | Not started | | Cheap tool model default; high-reasoning toggle |
+| **H – Branches** | Not started | | Conditions and skip paths |
+
+New routes: `GET/POST /api/environments`, `POST /api/environments/:id/rooms`, `POST /api/environments/:id/repos-from-room`, `POST /api/rooms/:slot/open`, `POST /api/toolkits/axian/import`, `GET /api/setup-check`. `GET/POST /api/teams` now carry a `graph`.
 Builder note: automations are stored as a **graph** from the first slice (AU-1), even while early UI shows them as a list, so the drag-and-drop canvas (D) is a new view of the same data, not a migration.
 
 ---

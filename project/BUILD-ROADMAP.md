@@ -319,6 +319,37 @@
 
 ---
 
+## Phase 9 — General agent platform (branch `sdlc-automation`)
+
+**Goal:** Environments per client, importable agent kits (Axian Squad first), automations built on a canvas. Detail in `REQUIREMENTS-PRODUCT.md` §9.1.
+
+### 9.1 Axian import (B1)
+- [x] Adapter reads the kit folder and README rank table; kit is not modified
+- [x] Generated front matter, offline draft, platform preamble; kit passed as a readable folder
+- [x] Per-agent `sources` scoping; gated agents get `needs_approval`
+- [x] Team "Axian Squad" (ranks 0–7) created on import
+- [ ] Live run of an imported agent against a real model (reads skill files from the kit)
+
+### 9.2 Environments and rooms (A, B2)
+- [x] One room file per sprint room; legacy `room.json` migrated once
+- [x] Environments per workspace; Default holds earlier rooms
+- [x] Room ids prefixed per environment so memory and DMs never mix
+- [x] Custom agents and teams scoped per environment
+- [x] Sidebar: environment switcher, room list, new room, new environment, save repos as default
+- [ ] Active room per session, and a run lock per room (today: one active room and one run per server)
+
+### 9.3 Builder (D)
+- [x] Automation = graph; compiled to the ordered list the engine runs
+- [x] Canvas: add, drag, connect, remove, per-node approval, edit saved teams
+- [ ] Branches and conditions
+- [ ] Swarm node (replace the fixed kickoff members)
+
+### 9.4 Guide (F)
+- [x] Help tab with first-5-minutes guide
+- [x] Setup checklist with redirect URLs and scopes
+- [ ] Home empty-state CTAs
+
+---
 ## Phase 8 — Scale (parked)
 
 Do not start until 0–7 are solid.
