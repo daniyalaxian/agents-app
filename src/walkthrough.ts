@@ -7,7 +7,7 @@ import { decryptJson, encryptJson, loadSecrets, sealed, unseal } from "./crypto.
 import { approveAndContinue, openRoom, roomIdFor, runUntilWait, setMemoryRoot, softResetRoom, verdictOf } from "./router.js"
 import type { AgentFile } from "./types.js"
 import { canUseEnvironment, createEnvironment, listEnvironments, scopeFor } from "./environments.js"
-import { listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
+import { listRoomSummaries, newSlot, readRoom, runWithSession, setActiveSlot, writeRoom } from "./store.js"
 import { buildPrompt, runLocal, type StageRunner, type TurnRunner } from "./runner.js"
 import { addHumanMessage, DEFAULT_MEMBERS, handoffStages, newGroup, pickNextSpeaker, readGroup, writeGroup, parseTurnTag, resolveAlias, runGroup } from "./group.js"
 import { createAgentFromMarkdown, duplicateAgent, listCatalog, resolveTeamAgents } from "./catalog.js"
@@ -390,6 +390,21 @@ writeRoom(root, roomA)
 assert(readRoom(root)?.id === roomB.id, "the active room is still the one the person opened")
 assert(readRoom(root, roomA.slot)?.notes.includes("written by a run that started before the switch"), "a run keeps writing to its own room")
 assert(!readRoom(root)?.notes.length, "the other room must not receive that write")
+// Each browser session has its own open room; the shared fallback is unchanged by what a session opens.
+const fallbackSlot = readRoom(root)?.slot
+await runWithSession("session-a", async () => {
+  setActiveSlot(root, roomA.slot!)
+  assert(readRoom(root)?.id === roomA.id, "a session sees the room it opened")
+})
+await runWithSession("session-b", async () => {
+  assert(readRoom(root)?.slot === fallbackSlot, "a new session starts on the shared fallback room")
+  setActiveSlot(root, roomB.slot!)
+  assert(readRoom(root)?.id === roomB.id, "another session opens a different room")
+})
+await runWithSession("session-a", async () => {
+  assert(readRoom(root)?.id === roomA.id, "the first session is unaffected by the second")
+})
+assert(readRoom(root)?.slot === fallbackSlot, "the shared fallback is unchanged by what sessions open")
 const reset = softResetRoom(roomA, agents, "New wording")
 assert(reset.slot === roomA.slot && reset.environmentId === envA.id && reset.id.startsWith(`${envA.id}--`), "a soft reset keeps the room's slot and environment")
 

@@ -346,6 +346,9 @@ $("#new-env").addEventListener("click", async () => {
   await reloadAfterSwitch()
 })
 
+$("#nudge-account").addEventListener("click", () => showView("settings", { tab: "account" }))
+$("#nudge-help").addEventListener("click", () => showView("settings", { tab: "help" }))
+
 $("#env-repos").addEventListener("click", async () => {
   const result = await fetchJson(`/api/environments/${encodeURIComponent(browsedEnvId)}/repos-from-room`, {})
   if (result.error) return window.alert(result.error)
@@ -1532,6 +1535,10 @@ registerForm.addEventListener("submit", async (event) => {
   }
   accountPreview.textContent = `Workspace ${payload.workspace.name} ready`
   await loadSession()
+  const welcome = $("#help-welcome")
+  welcome.textContent = `Welcome, ${payload.user.name || payload.user.email}. Your workspace ${payload.workspace.name} is ready. Here is how to get going.`
+  welcome.hidden = false
+  showView("settings", { tab: "help" })
 })
 logoutBtn.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST" })
@@ -1543,6 +1550,7 @@ function renderSession(next) {
   renderConnection(atlassianStatus, connectAtlassian, disconnectAtlassian, "Atlassian", next.atlassian?.connected, next.atlassian?.siteName, next.atlassianConfigured)
   renderConnection(figmaStatus, connectFigma, disconnectFigma, "Figma", next.figma?.connected, next.figma?.userName, next.figmaConfigured)
   renderConnection(githubStatus, connectGitHub, disconnectGitHub, "GitHub", next.github?.connected, next.github?.userLogin, next.githubConfigured)
+  $("#guest-nudge").hidden = Boolean(next.user)
   if (next.user) {
     accountStatus.textContent = next.user.name || next.user.email
     accountStatus.classList.add("connected")

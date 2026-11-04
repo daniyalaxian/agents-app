@@ -92,6 +92,7 @@ import { CredentialStore } from "./credentials.js"
 import { loadSecrets, sealed, unseal } from "./crypto.js"
 import {
   approveAndContinue,
+  NEW_ROOM_REQUIREMENT,
   openRoom,
   recover,
   retry,
@@ -103,7 +104,7 @@ import {
 } from "./router.js"
 import { engineName, modelFor, selectRunner, selectTurnRunner, supportsRuntimeTools } from "./runner.js"
 import { ensureSession } from "./session.js"
-import { DEFAULT_ENV_ID, listRoomSummaries, newSlot, readRoom, setActiveSlot, writeRoom } from "./store.js"
+import { DEFAULT_ENV_ID, listRoomSummaries, newSlot, readRoom, runWithSession, setActiveSlot, writeRoom } from "./store.js"
 import {
   canUseEnvironment,
   createEnvironment,
@@ -173,6 +174,12 @@ app.get("/api/health", (_req, res) => {
     smokeConfigured: Boolean(smokeToken()),
     qaTestUserConfigured: Boolean(qaTestUser()),
   })
+})
+
+// Each browser session has its own open room, so one person switching rooms does not move anyone else's screen.
+app.use(["/api", "/auth"], (req, res, next) => {
+  if (req.originalUrl.startsWith("/api/jenkins")) return next() // a callback, not a person
+  runWithSession(ensureSession(req, res, secrets.sessionSecret), next)
 })
 
 app.get("/api/session", (req, res) => {
@@ -1801,7 +1808,12 @@ async function loadSourcesForRole(
 /** A fresh sprint room inside an environment, made active. It starts with the environment's default repos. */
 function openNewRoom(environmentId: string, workspaceId: string | null, requirement: string | undefined): Room {
   const env = getEnvironment(root, environmentId)
-  const room = openRoom(roomAgents(null, workspaceId, environmentId), requirement, environmentId)
+  // Rooms with the same wording would share one id, and so one memory and one set of chats. Number the repeats.
+  const taken = new Set(listRoomSummaries(root).map((item) => item.id))
+  const base = requirement?.trim() || NEW_ROOM_REQUIREMENT
+  let wording = base
+  for (let n = 2; taken.has(roomIdFor(environmentId, wording)); n++) wording = `${base} ${n}`
+  const room = openRoom(roomAgents(null, workspaceId, environmentId), wording, environmentId)
   room.teamId = ensureDefaultTeam(root).id
   room.gitRepos = (env?.gitRepos ?? []).map((repo) => ({ ...repo, id: crypto.randomUUID() }))
   room.slot = newSlot()

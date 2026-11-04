@@ -14,6 +14,9 @@ export function setMemoryRoot(root: string): void {
 export const REQUIREMENT =
   "Show payment status on the order screen. The customer opens an order and sees whether payment is Paid, Pending, or Failed."
 
+/** What a room made with "New room" or "New environment" is called until the person writes the requirement. */
+export const NEW_ROOM_REQUIREMENT = "New sprint"
+
 /** Room ids key memory and chats. Rooms outside the Default environment are prefixed so two clients never share them. */
 export function roomIdFor(environmentId: string | null, requirement: string): string {
   const slug = slugifyRequirement(requirement)

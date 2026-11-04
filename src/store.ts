@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -53,21 +54,53 @@ function migrateLegacy(root: string): void {
   fs.writeFileSync(activePath(root), JSON.stringify({ slot }))
 }
 
-export function activeSlot(root: string): string | null {
-  migrateLegacy(root)
+const sessions = new AsyncLocalStorage<string>()
+
+/**
+ * Runs `fn` as one browser session, so `activeSlot` and `setActiveSlot` mean that session's open room. Requests are
+ * wrapped in this by the server. Outside it (tests, the Jenkins callback) they use the shared fallback room.
+ */
+export function runWithSession<T>(sessionId: string, fn: () => T): T {
+  return sessions.run(sessionId, fn)
+}
+
+type Pointer = { slot?: string; sessions?: Record<string, string> }
+const MAX_SESSIONS = 200
+
+function readPointer(root: string): Pointer {
   try {
-    const slot = (JSON.parse(fs.readFileSync(activePath(root), "utf8")) as { slot?: string }).slot
-    return slot && fs.existsSync(roomFile(root, slot)) ? slot : null
+    return JSON.parse(fs.readFileSync(activePath(root), "utf8")) as Pointer
   } catch {
-    return null
+    return {}
   }
 }
 
-export function setActiveSlot(root: string, slot: string): void {
-  if (!fs.existsSync(roomFile(root, slot))) throw new Error("Room not found")
-  fs.writeFileSync(activePath(root), JSON.stringify({ slot }))
+/** The room this session has open, else the shared fallback (the first room ever made). */
+export function activeSlot(root: string): string | null {
+  migrateLegacy(root)
+  const pointer = readPointer(root)
+  const sessionId = sessions.getStore()
+  const own = sessionId ? pointer.sessions?.[sessionId] : undefined
+  for (const slot of [own, pointer.slot]) {
+    if (slot && fs.existsSync(roomFile(root, slot))) return slot
+  }
+  return null
 }
 
+/** Opens a room for this session only. With no session it sets the shared fallback. */
+export function setActiveSlot(root: string, slot: string): void {
+  if (!fs.existsSync(roomFile(root, slot))) throw new Error("Room not found")
+  const pointer = readPointer(root)
+  const sessionId = sessions.getStore()
+  if (sessionId) {
+    const entries = Object.entries({ ...pointer.sessions, [sessionId]: slot })
+    pointer.sessions = Object.fromEntries(entries.slice(-MAX_SESSIONS))
+    if (!pointer.slot || !fs.existsSync(roomFile(root, pointer.slot))) pointer.slot = slot
+  } else {
+    pointer.slot = slot
+  }
+  fs.writeFileSync(activePath(root), JSON.stringify(pointer))
+}
 export function readRoom(root: string, slot: string | null = activeSlot(root)): Room | null {
   if (!slot) return null
   const file = roomFile(root, slot)

@@ -336,7 +336,8 @@
 - [x] Room ids prefixed per environment so memory and DMs never mix
 - [x] Custom agents and teams scoped per environment
 - [x] Sidebar: environment switcher, room list, new room, new environment, save repos as default
-- [ ] Active room per session, and a run lock per room (today: one active room and one run per server)
+- [x] Open room is per browser session
+- [ ] Run lock per room (today: one run per server)
 
 ### 9.3 Builder (D)
 - [x] Automation = graph; compiled to the ordered list the engine runs

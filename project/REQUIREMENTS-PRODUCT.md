@@ -17,8 +17,13 @@
 | D3 | Builder + Axian | **Both in scope.** User **imports Axian** → platform **converts** the recommended pipeline into an editable **drag-and-drop automation** in our builder. Import is the on-ramp; builder is the durable editing surface. |
 | D4 | Product scope | **General agent platform**, not an SDLC-only app. The SDLC flow (our 9 roles, or Axian’s 11) is **one template** among user-built automations. Importing **Axian agents** is a first-class feature. (2026-11-03) |
 | D5 | First build step | Start with an **Axian import spike** (slice B, into today’s workspace catalog + a default team), *then* the environment model (slice A). The spike settles the manifest and shows what an Environment must hold (skills, cluster context, repos). Moving imported agents from workspace to environment scope later is a small migration. (2026-11-03) |
+| D6 | Positioning | **Enterprise platform, many use cases** (SDLC delivery, PM reporting, audit, ops/incident). Axian is toolkit #1, not the product. See §12 recommendations and ENT-1–ENT-11. (2026-11-04) |
 
-Still open: §12 Q4–Q20.
+| D7 | Q4–Q20 | **Accepted** as written in §12 (enterprise recommendations). (2026-11-04) |
+| D8 | Top priorities | **1. Token efficiency** (§6.11) and **2. user flow** (§6.12) are the quality bar for every slice. A feature that doubles tokens or adds steps to the happy path needs a reason. (2026-11-04) |
+| D9 | Future integrations | Build **API-first** so the platform can later plug into other platforms (Slack/Teams, Jira app, IDEs, CI, other agent hubs) without a rewrite (§6.13). Not built now, but nothing may block it. (2026-11-04) |
+
+No open decisions in §12. New questions go to §12 “Later”.
 
 ---
 
@@ -211,6 +216,51 @@ Build **Agentic Automation** — a reusable SI delivery platform where teams log
 | HG-1 | In-app Help with first 5 minutes guide | P0 |
 | HG-2 | Setup checklist for OAuth scopes (Atlassian, Figma, GitHub) | P0 |
 | HG-3 | Empty-state CTAs on Home / Environment | P0 |
+
+### 6.11 Token efficiency (top priority, D8)
+Goal: the same outcome for the fewest tokens, and every token is visible.
+
+| ID | Requirement | Priority |
+| --- | --- | --- |
+| TOK-1 | **Measure first:** record input/output tokens (and model) per agent turn, per run, per room, per environment; show them on the stage and in a run summary | P0 |
+| TOK-2 | **Budgets:** per-environment and per-automation token budget; warn at 80%, stop and ask the person at 100% | P0 |
+| TOK-3 | **Handoff summaries:** later stages get a short structured summary of each prior output (decisions, gaps, IDs, Write plans) instead of the full text; full text readable on demand by a read tool | P0 |
+| TOK-4 | **Sources by reference:** large sources (BRD, Figma, code, skills, environment profile) are given as readable folders/tools, not pasted; only a short index goes into the prompt (extends TK-10) | P0 |
+| TOK-5 | **Stable prompt prefix:** order the prompt so fixed parts (platform rules, toolkit preamble, agent text, environment profile) come first and change rarely, so provider prompt caching works; volatile parts (memory, notes, prior outputs) last | P0 |
+| TOK-6 | **Resume, don't resend:** agents that run again (retry, DM, group chat) resume their session and get only what changed (already done for group chat; extend to retry and DM) | P1 |
+| TOK-7 | **Model routing:** cheap tool-capable model by default; deep model only on nodes marked Deep or after a failed self-check (G exists; add auto-escalate) | P1 |
+| TOK-8 | **Trim tool output:** cap and summarize large tool results (Confluence pages, Jira lists, logs) before they enter the context | P1 |
+| TOK-9 | **Memory hygiene:** shared memory sent as top-N relevant items per role, deduplicated, not the whole file | P1 |
+| TOK-10 | **Token regression check:** walkthrough asserts prompt size per role on the sample room stays under a set ceiling | P1 |
+| TOK-11 | Cost report per environment and per use-case template (ENT-11 moves up to P1) | P1 |
+
+### 6.12 User flow (top priority, D8)
+Goal: a new person reaches a useful result and the first Approve fast, and an approver never hunts for work.
+
+| ID | Requirement | Priority |
+| --- | --- | --- |
+| UF-1 | **Three steps to a run** from an environment: pick use case template → give requirement/key → Run. Sources and repos come from environment defaults | P0 |
+| UF-2 | **Use-case templates** on the start screen: SDLC delivery, PM report, Audit, Incident (each a saved automation) (ENT-9 moves to P0) | P0 |
+| UF-3 | **Approvals inbox:** one list of pending approvals across all rooms the person may approve, with system, target, payload and Approve/Deny | P0 |
+| UF-4 | **Notifications** when a run waits for review or approval (in-app first; email/Slack/Teams via §6.13) | P1 |
+| UF-5 | **Progressive disclosure:** model, budgets, policies, Jenkins, skills under Advanced; defaults always work | P0 |
+| UF-6 | **Clear run state:** each stage shows status, tokens, time, sources used, gaps; one “why stopped” line when blocked | P0 |
+| UF-7 | **Resume anywhere:** closing the browser never loses a run; reopening the room shows where it stopped | P0 |
+| UF-8 | **Role-aware screens:** Members see Run/Chat; Approvers see the inbox first; Admins see setup | P1 |
+| UF-9 | Usability target: first-time tester reaches first Approve in under 15 minutes with only in-app Help (success criterion 4) | P0 |
+
+### 6.13 Integration-ready (future, D9)
+Not built now. These rules keep the door open.
+
+| ID | Requirement | Priority |
+| --- | --- | --- |
+| INT-1 | **API-first:** every UI action has a documented REST route; the UI uses only those routes | P0 (rule) |
+| INT-2 | **Service accounts / API keys** per environment with the same RBAC as people | P1 |
+| INT-3 | **Webhooks / events:** run started, waiting approval, approved, denied, finished, failed | P1 |
+| INT-4 | **Approvals from outside:** approve/deny through the API so Slack/Teams/Jira apps can show approval cards (the platform still executes) | P2 |
+| INT-5 | **Expose the platform as an MCP server** (run automation, list approvals, read outputs) for IDEs and other agent hubs | P2 |
+| INT-6 | **Pluggable runners:** runner interface stays provider-neutral (Cursor local/cloud today; others later) | P1 |
+| INT-7 | **Pluggable connectors:** new systems (ServiceNow, Azure DevOps, GitLab, Slack) added as connector modules with read tools + approved write executors | P2 |
 
 ---
 
@@ -422,7 +472,7 @@ Recommended build order: **B (import spike) → A → B (finish: environment sco
 | Slice | State | What exists | Not yet |
 | --- | --- | --- | --- |
 | **B1 – Axian import spike** | Built | `src/toolkit.ts` adapter, `POST /api/toolkits/axian/import`, per-agent `sources` scoping (`src/scope.ts`), import form in Team & agents | Live run of an imported agent with a model key |
-| **A – Environments, rooms** | Built | `src/environments.ts`, one file per room under `data/rooms/`, environment switcher and room list in the sidebar, environment-prefixed room ids | Per-session active room; per-room run lock (global `busy` remains); Home screen |
+| **A – Environments, rooms** | Built | `src/environments.ts`, one file per room under `data/rooms/`, per-session open room (`runWithSession` in `src/store.ts`), environment switcher and room list in the sidebar, environment-prefixed room ids | Per-room run lock (global `busy` remains: one run at a time, and switching is refused during a run); Home screen; Default environment is visible to every account |
 | **B2 – Environment scope** | Built | Custom agents and teams keyed by `scopeFor(workspaceId, environmentId)`; Default keeps the workspace-level ones | Sharing or copying agents between environments; per-agent overwrite policy on re-import |
 | **D – Builder** | Built (chains) | `src/graph.ts`; teams carry a graph that compiles to the ordered list; canvas in Team & agents with drag, connect, per-node approval | Branches and conditions (H); a Human-approve node type separate from an agent's gate; run-from-canvas progress |
 | **F – Guide** | Built | Help tab: first-5-minutes guide and live setup checklist with redirect URL and scopes (`src/setup.ts`, `GET /api/setup-check`) | Home empty-state CTAs (HG-3) |
@@ -433,6 +483,24 @@ Recommended build order: **B (import spike) → A → B (finish: environment sco
 
 New routes: `GET/POST /api/environments`, `POST /api/environments/:id/rooms`, `POST /api/environments/:id/repos-from-room`, `POST /api/rooms/:slot/open`, `POST /api/toolkits/axian/import`, `GET /api/setup-check`. `GET/POST /api/teams` now carry a `graph`.
 Builder note: automations are stored as a **graph** from the first slice (AU-1), even while early UI shows them as a list, so the drag-and-drop canvas (D) is a new view of the same data, not a migration.
+
+### 9.2 Next build order (enterprise, from 2026-11-04)
+
+Token measurement comes first because every later choice should be judged by it.
+
+| Step | Slice | Covers | Done when |
+| --- | --- | --- | --- |
+| 1 | **T1 – Token meter** | TOK-1, TOK-10 | Each stage and run shows tokens + model; walkthrough asserts per-role prompt size ceiling |
+| 2 | **T2 – Lean packets** | TOK-3, TOK-4, TOK-5, TOK-9 | Prior outputs go as summaries; prompt prefix ordered for caching; measured drop vs T1 baseline |
+| 3 | **R – Concurrency** | ENT-8 | Per-room run lock + queue; two environments run at once |
+| 4 | **S – RBAC + audit** | ENT-1, ENT-2, ENT-3 | Roles enforced on routes; audit log of runs, tool calls, approvals |
+| 5 | **U1 – Start flow** | UF-1, UF-2, UF-5, UF-6, UF-7, HG-3 | Template picker → requirement → Run; clear stage state; empty-state CTAs |
+| 6 | **U2 – Approvals inbox** | UF-3, UF-8 | One inbox across rooms; approvers land there |
+| 7 | **E – Swarm node** | AU-2 | Group chat as a canvas node with chosen members |
+| 8 | **T3 – Budgets + routing** | TOK-2, TOK-6, TOK-7, TOK-8, TOK-11 | Budgets stop runs; resume for retry/DM; auto-escalate model; cost report |
+| 9 | **P – Environment profile + policy** | Q7, ENT-4, ENT-5 | Profile per environment; required gates; service connections |
+| 10 | **K – Toolkit library** | ENT-7, Q17, Q19 | Git import pinned to version; upgrade diff |
+| Later | SSO, API keys, webhooks, external approvals, MCP server, connectors | ENT-6, INT-2…INT-7 | — |
 
 ---
 
@@ -457,7 +525,9 @@ Builder note: automations are stored as a **graph** from the first slice (AU-1),
 1. Axian user imports Squad in &lt; 5 minutes and runs default automation on a sample key.  
 2. SI lead maintains ≥2 environments without cross-talk of repos/memory.  
 3. Zero external writes without an Approve click in walkthrough + manual test.  
-4. A first-time tester completes the §5.1 happy path to the first Approve **in under 15 minutes using only in-app Help** (measured in a usability session; target time to confirm).
+4. A first-time tester completes the §5.1 happy path to the first Approve **in under 15 minutes using only in-app Help** (measured in a usability session; target time to confirm).  
+5. **Tokens:** the sample SDLC run uses at least 40% fewer input tokens after T2 than the T1 baseline, with the same stage outputs judged acceptable (target to confirm after T1 measures the baseline).  
+6. **Approver flow:** an approver clears all pending approvals from the inbox without opening any room.
 
 ---
 
@@ -468,7 +538,7 @@ Builder note: automations are stored as a **graph** from the first slice (AU-1),
 2. **Environment naming?** → **Environment**  
 3. **Builder vs import?** → **Both.** Import Axian → convert to our **drag-and-drop builder** graph.
 
-### Still need answers
+### Questions 4–20 (answers accepted 2026-11-04, D7)
 
 #### Axian import
 4. On import, should we import **skills as separate library**, or **merge skill text into each agent** for simplicity?  
@@ -499,26 +569,44 @@ Builder note: automations are stored as a **graph** from the first slice (AU-1),
 19. Re-import when the kit changes: overwrite agents the user has edited, keep them, or ask per agent?  
 20. Should the stage gates in the default Axian automation (§7.4) be on by default, or rely only on per-action permission cards?
 
-### Proposed answers (for discussion, not locked)
-| Q | Proposal | Why |
+### Accepted answers — enterprise, multi-use-case (2026-11-04)
+
+Direction (D6): **Agentic Automation is an enterprise platform.** One organization runs many environments (clients/programs) and many use cases on the same engine: SDLC delivery, PM reporting, audits, ops/incident response, and toolkits we have not seen yet. Axian Squad is toolkit #1, not the product. Answers below assume that.
+
+| Q | Recommendation | Why (enterprise) |
 | --- | --- | --- |
-| 4 | Skills as a **separate library**, given as a readable folder | Keeps prompts small (CO-4); toolkit stays upgradeable |
-| 5 | PM + Auditor as **separate templates**, off the main path | Matches the kit (“standalone, any time”) |
-| 6 | DesignAgent as an **optional first node**, off by default | Most sprints start from an existing design |
-| 7 | **Later**; v1 lets the person paste cluster text into the environment profile | Avoids a second import format in v1 |
-| 8 | **Personal** in v1, but store `ownerId` so sharing needs no migration | Smallest safe start |
-| 9 | UI/memory in v1; **export** to `docs/requirements/<KEY>/` as a later button | Axian users can keep their file trail |
-| 10 | **Draft** when no key; **Cursor local** for demos | Local runs support runtime approvals |
-| 11 | **Yes — lock it**: executors stay in platform code | AP-1 and AP-3 depend on it |
-| 12 | **Leads/admins edit**, members run | Protects shared automations |
-| 13 | **Create environment** first, then “Import Axian” as the next step | Import needs an environment to land in |
-| 14 | Prompt rule + **internal audit trail always kept**; outbound filter optional | Transparency stays internal even if outbound text is plain |
-| 15 | **Environment** owns agents, toolkits, repos; **user** owns OAuth tokens | Client isolation (ENV-4) |
-| 16 | Slug id + Axian name as alias | Fits existing catalog naming |
-| 17 | **Folder path** in v1 | The kit is local; zip/git later |
-| 18 | **Import all 11**, mark source gaps | Standalone rule makes them usable |
-| 19 | **Ask per edited agent**; overwrite unedited ones | No silent loss of user edits |
-| 20 | **On** by default where §7.4 shows them | Same human control the kit expects
+| 4 | Skills are a **versioned skill library** owned by the toolkit, attached to agents by reference and given as readable folders | Many toolkits and use cases share skills; merging text into agents breaks upgrades and blows up tokens |
+| 5 | PM and Auditor ship as **their own automation templates** (“Weekly PM report”, “Sprint audit”), not on BRD→Code | Each use case is its own automation; the main delivery path stays short |
+| 6 | DesignAgent is an **optional first node**, enabled per environment template | Some programs are design-led, most are not |
+| 7 | **v1: Environment profile is first-class** (cluster/project MD imported or pasted, versioned, given to every agent in that environment) | Multi-client context is the core of multi-environment; without it agents mix client rules |
+| 8 | **Shared within the organization** with role-based access; personal sandboxes allowed | Enterprise teams work together on an environment; personal-only would need a migration later |
+| 9 | Platform store is the system of record (outputs, approvals, memory); **export** to git `docs/requirements/<KEY>/` and Confluence on Approve | Auditability and retention live in the platform; teams keep their file trail |
+| 10 | **Self-hosted runner** (Cursor local) as the enterprise default; cloud runner optional per environment; draft for demos/no key | Private networks (QA, Jenkins, internal repos) need a runner inside the network |
+| 11 | **Locked: yes.** All external writes go through platform executors after Approve | Core enterprise control (AP-1, AP-3); enables audit and policy |
+| 12 | **RBAC per environment:** Owner/Admin edits automations, toolkits, connections; Lead edits automations; Approver approves writes; Member runs and chats; Viewer reads | Separation of duties; approver is distinct from author |
+| 13 | Empty org: **Create environment**. Empty environment: **Add toolkit** (Axian listed first) or **Use a template** | Generic for any use case, Axian is one choice |
+| 14 | **Policy per environment**: outbound text rule (prompt) + optional outbound filter; **internal audit trail always kept** (proposed by which agent, approved by whom, when) | Clients differ on AI-disclosure; internal transparency is non-negotiable |
+| 15 | **Organization** owns the toolkit library (versions); **environment** enables toolkits and owns agents/automations/repos/profile; **connections** support both a user OAuth token and an environment **service connection** (admin-configured) | Automations must run without depending on one person's token |
+| 16 | Stable slug id + display name/alias (`RequirementAgent`) | Ids survive renames across toolkits |
+| 17 | v1: folder path **and git URL** (pinned to tag/commit); zip later | Enterprise toolkits live in git and are versioned |
+| 18 | **Import all 11**, flag missing sources as gaps | Each rank maps to a use case template |
+| 19 | Toolkits are **pinned per environment**; upgrade shows a **diff**, unedited agents update, edited agents ask | Controlled rollout across many environments |
+| 20 | Stage gates **on by default**; environment policy can require them (cannot be turned off by Members) | Enterprise governance |
+
+### Enterprise requirements this adds
+| ID | Requirement | Priority |
+| --- | --- | --- |
+| ENT-1 | Organization → environments → rooms hierarchy; org admins | P0 |
+| ENT-2 | RBAC roles per environment (Owner, Admin, Lead, Approver, Member, Viewer) enforced on routes | P0 |
+| ENT-3 | Immutable **audit log** of runs, tool calls, approvals/denials, exports | P0 |
+| ENT-4 | Environment **policy**: required stage gates, outbound text rule, allowed systems, allowed models | P1 |
+| ENT-5 | **Service connections** per environment (Atlassian/GitHub/Figma/Jenkins) besides user OAuth | P1 |
+| ENT-6 | **SSO** (SAML/OIDC) and SCIM provisioning | P1 |
+| ENT-7 | Toolkit library with versions, git import, pin + upgrade diff | P1 |
+| ENT-8 | Per-room run lock and a job queue (many concurrent runs) | P0 |
+| ENT-9 | Use-case **templates** (SDLC delivery, PM report, audit, incident) | P1 |
+| ENT-10 | Data residency / retention settings; secrets in a vault (not only local `.enc` files) | P2 |
+| ENT-11 | Cost and usage reporting per environment and per run | P2 |
 
 ---
 
@@ -529,3 +617,5 @@ Builder note: automations are stored as a **graph** from the first slice (AU-1),
 | 2026-11-03 | Initial draft from product discussion + Axian kit review + current agents-app capabilities |
 | 2026-11-03 | Locked D1–D3: name **Agentic Automation**, term **Environment**, Axian import → drag-drop builder conversion; elevated builder to P0; reordered slices |
 | 2026-11-03 | D4 general platform, D5 import spike first; §7.7–7.10 Axian format, per-agent profile, conversion rules, spike acceptance; TK-8–11; §8.3 engine constraints; risks; measurable success 4; Q15–Q20 + proposed answers |
+| 2026-11-04 | D6 enterprise, multi-use-case direction; Q4–Q20 recommendations revised for enterprise; added ENT-1–ENT-11 |
+| 2026-11-04 | D7 Q4–Q20 accepted; D8 token efficiency + user flow as top priorities (§6.11 TOK, §6.12 UF); D9 integration-ready (§6.13 INT); next build order §9.2 |

@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" href="data:," />
   </head>
   <body>
     <div class="layout">
@@ -27,7 +28,7 @@
         <p class="side-heading">Environment</p>
         <select id="env-select" class="env-select" aria-label="Environment"></select>
         <ul id="room-list" class="room-list" aria-label="Sprint rooms"></ul>
-        <div class="side-actions">
+        <div class="side-actions env-actions">
           <button id="new-room" class="side-link" type="button">+ New room</button>
           <button id="new-env" class="side-link" type="button">+ New environment</button>
           <button id="env-repos" class="side-link" type="button" title="New rooms in this environment start with this room's repos">Save repos as default</button>
@@ -70,6 +71,11 @@
 
         <!-- Step-by-step sprint setup. Setup blocks are moved in here by app.js. -->
         <section id="view-wizard" class="view page-view" hidden>
+          <p id="guest-nudge" class="nudge" hidden>
+            <span>New here? Create an account to save your agents, automations and environments.</span>
+            <button id="nudge-account" class="ghost small" type="button">Create an account</button>
+            <button id="nudge-help" class="ghost small" type="button">How it works</button>
+          </p>
           <ol class="wizard-steps">
             <li data-step-tab="1">Connect accounts</li>
             <li data-step-tab="2">Sprint sources</li>
@@ -203,6 +209,7 @@
           </div>
 
           <div class="tab-panel" data-panel="help" hidden>
+            <p id="help-welcome" class="welcome" hidden></p>
             <h3>Your first 5 minutes</h3>
             <ol class="help-steps">
               <li><b>Check the setup</b> below. Draft mode (no model key) works for a dry run; add a Cursor key for real answers.</li>
